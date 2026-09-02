@@ -47,12 +47,23 @@ pi-llm-gateway/
 2. **暗号化する** — 実キーを書いたyamlを公開鍵で暗号化して `secrets/secrets.yaml.age` にする（このファイルはコミットしてよい）。平文は削除
 3. **起動時に復号する** — gateway起動時に環境変数 `AGE_IDENTITY_FILE` で指定した秘密鍵で復号
 
+## 開発
+
+```bash
+go build ./...          # ビルド
+go test ./...           # テスト
+go run ./cmd/gateway    # 起動（AGE_IDENTITY_FILE と secrets/secrets.yaml.age が必須）
+```
+
+CI（.github/workflows/ci.yml）が gofmt / go vet / go build / go test を検証する。
+
 ## 実装ロードマップ
 
-- [ ] OpenAI素通しの最小サーバー
-- [ ] gatewayキー認証（auth）
-- [ ] streaming対応（sse）
-- [ ] Anthropicアダプター追加、models.yaml書き換えだけで切り替え可能に
+- [x] OpenAI素通しの最小サーバー（model差し替えのみのパススルー）
+- [x] gatewayキー認証（auth）
+- [x] streaming対応（sse — OpenAI素通し）
+- [x] Anthropicアダプターのスタブ（現在は501を返す）
+- [ ] Anthropicアダプター実装（OpenAI⇄Anthropic変換。models.yaml書き換えだけで切り替わるところまで）
 - [ ] 平文 `.env` キーを `secrets.yaml.age` に置き換え
 
 詳細な設計は [pi-llm-gateway-spec-go.md](pi-llm-gateway-spec-go.md) を参照。
