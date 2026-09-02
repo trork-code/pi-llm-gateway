@@ -32,6 +32,27 @@ func New(cfg *config.Config, reg *providers.Registry, log *slog.Logger) *Handler
 
 // ChatCompletions は POST /v1/chat/completions の本体。
 func (h *Handlers) ChatCompletions(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+	w = sw
+	var (
+		alias        string
+		providerName string
+		realModel    string
+		streaming    bool
+	)
+	defer func() {
+		// 監査方針(§9): リクエスト内容(メッセージ等)はログしない。モデル・成否・所要時間のみ
+		h.Log.Info("chat_completions",
+			"alias", alias,
+			"provider", providerName,
+			"model", realModel,
+			"stream", streaming,
+			"status", sw.status,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	}()
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -57,6 +78,10 @@ func (h *Handlers) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("unknown model: %q", in.Model), "invalid_request_error", "model_not_found")
 		return
 	}
+	alias = in.Model
+	providerName = mc.Provider
+	realModel = mc.Model
+	streaming = in.Stream
 
 	// providers registry からadapterを取り出す
 	ad, ok := h.Registry.Get(mc.Provider)

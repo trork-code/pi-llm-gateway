@@ -58,6 +58,54 @@ pi-llm-gateway/
 2. **暗号化する** — 実キーを書いたyamlを公開鍵で暗号化して `secrets/secrets.yaml.age` にする（このファイルはコミットしてよい）。平文は削除
 3. **起動時に復号する** — gateway起動時に環境変数 `AGE_IDENTITY_FILE` で指定した秘密鍵で復号
 
+## APIキー保護（多層防御）の実装状況
+
+アーキテクチャ仕様書§7.5の多層防御のうち、コード・CIで対応済みのもの:
+
+| 層 | 状態 | 実装 |
+|---|---|---|
+| ① 保管時の暗号化 | ✅ | `secrets.yaml.age`(age)。identity自体を`age -p`で保護する場合、`AGE_PASSPHRASE`で復号対応 |
+| ② 鍵の受け渡し | 🔶 | 秘密鍵はファイル以外に`AGE_IDENTITY`環境変数(シークレットマネージャ注入)でも渡せる |
+| ③ ファイル権限 | ✅ | 秘密鍵は所有者のみ必須(違反は起動失敗)、`secrets.yaml.age`は他者書き込み可能なら起動拒否 |
+| ④ プロセス・メモリ | ✅ | 起動時にコアダンプ無効化(RLIMIT_CORE=0)、キーはログに絶対に出さない、監査ログはモデル・成否・所要時間のみ、平文バッファのゼロ化(ベストエフォート) |
+| ⑤ ネットワーク | 🔶 | `BIND`既定`127.0.0.1`、TLS(`TLS_CERT`/`TLS_KEY`)、mTLS(`MTLS_CA`＝クライアント証明書必須)対応 |
+| ⑥ キー権限 | 📋 | 運用: プロバイダー側で最小権限キーを発行 |
+| ⑦ 監視 | 📋 | 運用: 監査ログ(リクエストごとのモデル・成否・所要時間)を収集して監視 |
+| ⑧ 供給網 | ✅ | CIにgitleaks(secret scanning)。依存は最小限(3パッケージ)に固定 |
+| ⑨ ローテーション | ✅ | `scripts/rotate-secrets.sh`(復号→編集→再暗号化) |
+
+### デプロイ時のハードニング例（systemd）
+
+```ini
+# /etc/systemd/system/pi-llm-gateway.service
+[Service]
+User=pi-gateway
+LimitCORE=0
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+Environment=CONFIG_FILE=/etc/pi-llm-gateway/models.yaml
+Environment=SECRETS_FILE=/etc/pi-llm-gateway/secrets.yaml.age
+Environment=AGE_IDENTITY_FILE=/etc/pi-llm-gateway/identity.age
+EnvironmentFile=-/etc/pi-llm-gateway/secret.env   # AGE_PASSPHRASE等(600, pi-gateway所有)
+ExecStart=/usr/local/bin/pi-llm-gateway
+```
+
+### 環境変数一覧
+
+| 変数 | 既定 | 説明 |
+|---|---|---|
+| `PORT` | `8080` | リッスンポート |
+| `BIND` | `127.0.0.1` | リッスンアドレス。LAN公開時のみ`0.0.0.0`等に変更 |
+| `CONFIG_FILE` | `config/models.yaml` | 非秘匿設定 |
+| `SECRETS_FILE` | `secrets/secrets.yaml.age` | 暗号化secrets |
+| `AGE_IDENTITY_FILE` | （必須） | age秘密鍵ファイル。`AGE_IDENTITY`と併用不可(ファイル優先) |
+| `AGE_IDENTITY` | （任意） | 秘密鍵の内容そのもの(シークレットマネージャ経由の注入用) |
+| `AGE_PASSPHRASE` | （任意） | `age -p`で保護したidentityの復号パスフレーズ |
+| `TLS_CERT` / `TLS_KEY` | （任意） | 指定するとHTTPSで起動 |
+| `MTLS_CA` | （任意） | クライアント証明書検証用CA。指定するとmTLS必須になる |
+
 ## 開発
 
 ```bash

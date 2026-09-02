@@ -1,19 +1,24 @@
 // Command gateway はPi向けのOpenAI互換APIゲートウェイを起動する。
 //
-// 起動順序は仕様書(pi-llm-gateway-spec-go.md)どおり:
-//  1. 環境変数を読む(PORT, AGE_IDENTITY_FILE など)
-//  2. secretsを復号する(age) — 失敗したら即座に起動を止める
-//  3. config/models.yamlを読んで検証する
-//  4. providerごとのadapterを構築し、registryへ登録する
-//  5. ルーター(chi)を組み立て、handlerとauthミドルウェアを紐付ける
-//  6. HTTPサーバーを起動してリッスンを開始する
+// 起動順序(pi-llm-gateway-architecture.md §4 / APIキー保護§7.5):
+//  1. OSレベルの鍵保護を有効化(コアダンプ無効化)
+//  2. 環境変数を読む(PORT, BIND, AGE_IDENTITY_FILE/AGE_IDENTITY, AGE_PASSPHRASE, TLS_* など)
+//  3. secretsを復号する(age) — 失敗したら即座に起動を止める
+//  4. config/models.yamlを読んで検証する
+//  5. providerごとのadapterを構築し、registryへ登録する
+//  6. ルーター(chi)を組み立て、監査ログ/authミドルウェア/handlerを紐付ける
+//  7. HTTPサーバーを起動してリッスンを開始する(TLS/mTLSオプション付き)
 package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,6 +32,7 @@ import (
 	"github.com/trork-code/pi-llm-gateway/internal/auth"
 	"github.com/trork-code/pi-llm-gateway/internal/config"
 	"github.com/trork-code/pi-llm-gateway/internal/handlers"
+	"github.com/trork-code/pi-llm-gateway/internal/hardening"
 	"github.com/trork-code/pi-llm-gateway/internal/providers"
 	"github.com/trork-code/pi-llm-gateway/internal/secrets"
 )
@@ -41,32 +47,64 @@ func main() {
 func run() error {
 	log := slog.Default()
 
-	// 1. 環境変数
+	// 1. OSレベルの鍵保護(多層防御④): コアダンプ無効化
+	// クラッシュ時にメモリ上の鍵がダンプファイルに残るのを防ぐ
+	if err := hardening.DisableCoreDumps(); err != nil {
+		log.Warn("コアダンプの無効化に失敗しました(systemdのLimitCORE=0を推奨)", "error", err)
+	}
+
+	// 2. 環境変数
 	port := envOr("PORT", "8080")
+	bind := envOr("BIND", "127.0.0.1") // 多層防御⑤: 既定はループバックのみでリッスン
 	configFile := envOr("CONFIG_FILE", "config/models.yaml")
 	secretsFile := envOr("SECRETS_FILE", "secrets/secrets.yaml.age")
 	identityFile := os.Getenv("AGE_IDENTITY_FILE")
-	if identityFile == "" {
-		return errors.New("環境変数 AGE_IDENTITY_FILE が未設定です(age秘密鍵のパスを指定してください)")
+	identityInline := os.Getenv("AGE_IDENTITY") // 多層防御②: シークレットマネージャからの注入用
+	passphrase := os.Getenv("AGE_PASSPHRASE")   // 多層防御①: age -p で保護されたidentityの復号用
+	if identityFile == "" && identityInline == "" {
+		return errors.New("環境変数 AGE_IDENTITY_FILE(または AGE_IDENTITY)が未設定です(age秘密鍵を指定してください)")
 	}
 
-	// 2. secrets復号 — 失敗したら即座に起動を止める(キーが無いまま動き出さないため)
+	// 秘密鍵ソース: ファイル(権限チェック付き)またはインライン(多層防御②③)
+	var identitySrc io.Reader
+	if identityFile != "" {
+		if err := hardening.CheckOwnerOnly(identityFile); err != nil {
+			return err
+		}
+		f, err := os.Open(identityFile)
+		if err != nil {
+			return fmt.Errorf("age秘密鍵を開けません(%s): %w", identityFile, err)
+		}
+		defer f.Close()
+		identitySrc = f
+		log.Info("秘密鍵をファイルから読み込みます", "file", identityFile, "passphrase_protected", passphrase != "")
+	} else {
+		identitySrc = strings.NewReader(identityInline)
+		log.Info("秘密鍵を環境変数から読み込みます(シークレットマネージャ経由を想定)")
+	}
+
+	// 3. secrets復号 — 失敗したら即座に起動を止める(キーが無いまま動き出さないため)
 	log.Info("secretsを復号しています", "file", secretsFile)
-	sec, err := secrets.Load(secretsFile, identityFile)
+	sec, err := secrets.Load(secrets.LoadOptions{
+		EncryptedPath: secretsFile,
+		Identity:      identitySrc,
+		Passphrase:    passphrase,
+	})
 	if err != nil {
 		return fmt.Errorf("secretsの復号に失敗しました: %w", err)
 	}
-	if sec.GatewayKey == "" {
-		return errors.New("secretsに gateway_key がありません")
+	gatewayKeys := sec.AllGatewayKeys()
+	if len(gatewayKeys) == 0 {
+		return errors.New("secretsに gateway_key / gateway_keys がありません")
 	}
 
-	// 3. config読み込み+検証
+	// 4. config読み込み+検証
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		return fmt.Errorf("configの読み込みに失敗しました: %w", err)
 	}
 
-	// 4. providerごとのadapterを構築し、復号済み実キーを渡してregistryへ登録
+	// 5. providerごとのadapterを構築し、復号済み実キーを渡してregistryへ登録
 	reg := providers.NewRegistry()
 	for name, pc := range cfg.Providers {
 		key := sec.APIKeys[name]
@@ -85,22 +123,37 @@ func run() error {
 		}
 	}
 
-	// 5. ルーター組み立て: authをミドルウェアとして先に登録し、handlerを紐付ける
+	// 6. ルーター組み立て: 監査ログ→auth→handler の順
 	h := handlers.New(cfg, reg, log)
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
+	r.Use(handlers.RequestLogger(log))
 	r.Use(chimw.Recoverer)
-	r.Use(auth.Middleware(sec.GatewayKey))
+	r.Use(auth.Middleware(gatewayKeys))
 	r.Post("/v1/chat/completions", h.ChatCompletions)
 	r.Get("/v1/models", h.Models)
 
-	// 6. HTTPサーバー起動(Graceful shutdown付き)
+	// 7. HTTPサーバー起動(TLS/mTLSオプション付き, graceful shutdown付き)
+	tlsCert := os.Getenv("TLS_CERT")
+	tlsKeyFile := os.Getenv("TLS_KEY")
+	if tlsCert != "" && tlsKeyFile == "" {
+		return errors.New("TLS_CERT が設定されていますが TLS_KEY が未設定です")
+	}
 	srv := &http.Server{
-		Addr:              ":" + port,
+		Addr:              net.JoinHostPort(bind, port),
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	if tlsCert != "" {
+		tlsCfg, err := buildTLSConfig(os.Getenv("MTLS_CA"))
+		if err != nil {
+			return err
+		}
+		srv.TLSConfig = tlsCfg
+		log.Info("TLSを有効化します", "mtls", os.Getenv("MTLS_CA") != "")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -111,11 +164,39 @@ func run() error {
 		_ = srv.Shutdown(sctx)
 	}()
 
-	log.Info("gatewayを起動しました", "addr", ":"+port, "default_model", cfg.DefaultModel, "models", len(cfg.Models))
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	log.Info("gatewayを起動しました", "addr", srv.Addr, "tls", tlsCert != "", "default_model", cfg.DefaultModel, "models", len(cfg.Models))
+	var serveErr error
+	if tlsCert != "" {
+		serveErr = srv.ListenAndServeTLS(tlsCert, tlsKeyFile)
+	} else {
+		serveErr = srv.ListenAndServe()
 	}
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
+	}
+	// 停止後に鍵の残存を最小化(ベストエフォート。多層防御④)
+	sec.Zero()
 	return nil
+}
+
+// buildTLSConfig はTLS(必要ならmTLS)の設定を組み立てる(多層防御⑤)。
+// MTLS_CAが指定された場合、そのCAが署名したクライアント証明書を持つ接続のみ許可する。
+func buildTLSConfig(clientCAFile string) (*tls.Config, error) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if clientCAFile == "" {
+		return cfg, nil
+	}
+	caPEM, err := os.ReadFile(clientCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("クライアントCA証明書を読めません(%s): %w", clientCAFile, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("クライアントCA証明書の形式が不正です(%s)", clientCAFile)
+	}
+	cfg.ClientCAs = pool
+	cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	return cfg, nil
 }
 
 func envOr(key, def string) string {

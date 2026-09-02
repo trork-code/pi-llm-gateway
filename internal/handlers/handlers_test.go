@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -113,5 +114,18 @@ func TestChatCompletions_MissingModel(t *testing.T) {
 	h.ChatCompletions(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRequestLogger(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	RequestLogger(log)(next).ServeHTTP(rec, req)
+	if rec.Code != http.StatusTeapot {
+		t.Fatalf("status = %d, want 418", rec.Code)
 	}
 }

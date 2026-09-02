@@ -11,6 +11,8 @@
 
 ```yaml
 gateway_key: <Pi側で使う合言葉>
+gateway_keys:            # 複数キーも可(将来のキーごとアクセス制御用)
+  - <別の合言葉>
 api_keys:
   openai: sk-...
   anthropic: sk-ant-...
@@ -18,15 +20,27 @@ api_keys:
 ```
 
 ```bash
-# 1. 鍵ペアを作る（1回だけ。秘密鍵はリポジトリ外で管理）
-age-keygen -o identity.txt
+# 1. 鍵ペアを作る。秘密鍵はリポジトリ外で管理する
+#    (推奨) パスフレーズ保護付きで作る — 平文の鍵がディスクに落ちない
+#    ※ age-keygenの公開鍵行はstderr/コメントで表示され、identity内容には含まれない
+age-keygen | age -p -o identity.age
 
-# 2. 実キーを書いたyamlを暗号化する（recipientはidentity.txtに表示された公開鍵）
+# 2. 実キーを書いたyamlを暗号化する(recipientはidentity作成時に表示された公開鍵)
 age -r <RECIPIENT> -o secrets.yaml.age secrets.yaml
 
 # 3. 平文を削除する
 rm secrets.yaml
+chmod 600 secrets.yaml.age identity.age
 
 # 4. gateway起動時に復号する
-AGE_IDENTITY_FILE=/path/to/identity.txt ./gateway
+AGE_IDENTITY_FILE=/path/to/identity.age \
+AGE_PASSPHRASE=<パスフレーズ> \
+./gateway
 ```
+
+## 多層防御との対応
+
+- **① 保管時** — `secrets.yaml.age`のみをコミット。identityは`age -p`でパスフレーズ保護推奨（鍵ファイルを盗まれても復号できない）
+- **② 鍵の受け渡し** — 秘密鍵はファイル以外に`AGE_IDENTITY`環境変数（シークレットマネージャから起動時に注入）でも渡せる
+- **③ 権限** — identityは所有者のみ（0600）。gatewayはrootではなく専用ユーザーで実行する
+- **⑨ ローテーション** — `bash scripts/rotate-secrets.sh <RECIPIENT>` で復号→編集→再暗号化が一発でできる
