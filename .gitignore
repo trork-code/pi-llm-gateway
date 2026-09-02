@@ -1,0 +1,21 @@
+# --- シークレット: 平文は絶対にコミットしない ---
+.env
+*.env
+secrets.yaml
+secrets/*.yaml
+
+# --- age 秘密鍵(identity)はリポジトリに置かない ---
+identity.txt
+age-identity*
+key.txt
+
+# --- Go ---
+bin/
+dist/
+*.exe
+*.test
+*.out
+
+# --- エディタ / OS ---
+.DS_Store
+Thumbs.db
