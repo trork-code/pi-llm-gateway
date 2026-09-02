@@ -7,6 +7,16 @@
 
 ## 運用手順
 
+`secrets.yaml`（平文、暗号化後に削除）の形式：
+
+```yaml
+gateway_key: <Pi側で使う合言葉>
+api_keys:
+  openai: sk-...
+  anthropic: sk-ant-...
+  ollamacloud: <ollama.comのAPIキー>
+```
+
 ```bash
 # 1. 鍵ペアを作る（1回だけ。秘密鍵はリポジトリ外で管理）
 age-keygen -o identity.txt

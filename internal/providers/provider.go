@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	ProviderOpenAI    = "openai"
-	ProviderAnthropic = "anthropic"
+	ProviderOpenAI      = "openai"
+	ProviderAnthropic   = "anthropic"
+	ProviderOllamaCloud = "ollamacloud"
 )
 
 // maxUpstreamBody は上流通信で読み取る上限(32MiB)。

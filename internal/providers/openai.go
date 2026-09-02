@@ -11,17 +11,31 @@ import (
 
 // OpenAIAdapter はOpenAI互換APIへの素通しアダプター。
 // リクエストはmodel差し替えのみ、レスポンスはそのまま返す。
+// OpenAI互換の他社API(Ollama Cloudなど)にも同じ仕組みを流用できる。
 type OpenAIAdapter struct {
+	name    string // registryキー。OpenAI互換の他プロバイダー(NewOpenAICompat)で差し替える
 	BaseURL string // 例: https://api.openai.com/v1
 	APIKey  string
 	HTTP    *http.Client
 }
 
+// NewOpenAI はOpenAI本体(openai)向けアダプターを作る。
 func NewOpenAI(baseURL, apiKey string) *OpenAIAdapter {
-	return &OpenAIAdapter{BaseURL: baseURL, APIKey: apiKey, HTTP: &http.Client{}}
+	return NewOpenAICompat(ProviderOpenAI, baseURL, apiKey)
 }
 
-func (a *OpenAIAdapter) Name() string { return ProviderOpenAI }
+// NewOpenAICompat はOpenAI互換API(Ollama Cloudなど)向けに、任意のprovider名で
+// 素通しアダプターを作る。
+func NewOpenAICompat(name, baseURL, apiKey string) *OpenAIAdapter {
+	return &OpenAIAdapter{name: name, BaseURL: baseURL, APIKey: apiKey, HTTP: &http.Client{}}
+}
+
+func (a *OpenAIAdapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return ProviderOpenAI
+}
 
 // rewriteBody はRawBodyのmodelを実モデル名へ差し替える。
 func (a *OpenAIAdapter) rewriteBody(req *ChatRequest, forceStream bool) ([]byte, error) {

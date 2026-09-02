@@ -76,6 +76,8 @@ func run() error {
 		switch name {
 		case providers.ProviderOpenAI:
 			reg.Register(providers.NewOpenAI(pc.BaseURL, key))
+		case providers.ProviderOllamaCloud:
+			reg.Register(providers.NewOllamaCloud(pc.BaseURL, key))
 		case providers.ProviderAnthropic:
 			reg.Register(providers.NewAnthropic(pc.BaseURL, key))
 		default:

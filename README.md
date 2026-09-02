@@ -18,6 +18,16 @@ Piから見るとただの「OpenAI互換API」。実際には裏側で本物の
 - **実キーの管理** — 実APIキーは `secrets/secrets.yaml.age`（age暗号化）で管理し、起動時のみメモリ上で復号。ディスクに平文を書き出さない
 - **エラー形式** — すべて `{ "error": { "message", "type", "code" } }` のOpenAI互換形
 
+## 対応プロバイダー
+
+| provider | 実装 | 備考 |
+|---|---|---|
+| `openai` | ✅ | 素通し（model差し替えのみ） |
+| `ollamacloud` | ✅ | Ollama Cloud (`https://ollama.com/v1`)。OpenAI互換APIとして素通し |
+| `anthropic` | 🚧 | スタブ(501)。ロードマップstep4で実装 |
+
+OpenAI互換のAPIを持つ他社サービスは、`internal/providers/openai.go` の `NewOpenAICompat` でprovider名を差し替えるだけで追加できる。
+
 ## フォルダ構成
 
 ```
@@ -25,6 +35,7 @@ pi-llm-gateway/
 ├── cmd/gateway/main.go        # 起動処理はここだけ
 ├── config/models.yaml         # どのエイリアスがどのプロバイダー/モデルか(非秘匿)
 ├── secrets/secrets.yaml.age   # 実キー一式(age暗号化済み。中身は秘匿)
+```
 ├── internal/
 │   ├── config/    # models.yamlを読む
 │   ├── secrets/   # secrets.yaml.ageを復号する

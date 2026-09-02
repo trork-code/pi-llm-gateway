@@ -8,6 +8,9 @@ models:
   pi-fast:
     provider: openai
     model: gpt-4.1-mini
+  pi-ollama:
+    provider: ollamacloud
+    model: gpt-oss:120b
 
 providers:
   openai:
@@ -16,3 +19,6 @@ providers:
   anthropic:
     base_url: https://api.anthropic.com/v1
     api_key_env: ANTHROPIC_API_KEY
+  ollamacloud:
+    base_url: https://ollama.com/v1
+    api_key_env: OLLAMA_API_KEY
