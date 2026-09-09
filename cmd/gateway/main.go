@@ -253,6 +253,12 @@ func buildRuntime(log *slog.Logger, app *appEnv) (*handlers.Runtime, error) {
 			reg.Register(providers.NewOpenAI(pc.BaseURL, key))
 		case providers.ProviderOllamaCloud:
 			reg.Register(providers.NewOllamaCloud(pc.BaseURL, key))
+		case providers.ProviderOpenRouter:
+			reg.Register(providers.NewOpenRouter(pc.BaseURL, key))
+		case providers.ProviderGroq:
+			reg.Register(providers.NewGroq(pc.BaseURL, key))
+		case providers.ProviderNVIDIA:
+			reg.Register(providers.NewNVIDIA(pc.BaseURL, key))
 		case providers.ProviderAnthropic:
 			reg.Register(providers.NewAnthropic(pc.BaseURL, key))
 		default:

@@ -11,6 +11,15 @@ models:
   pi-ollama:
     provider: ollamacloud
     model: gpt-oss:120b
+  pi-openrouter:
+    provider: openrouter
+    model: meta-llama/llama-3.3-70b-instruct
+  pi-groq:
+    provider: groq
+    model: llama-3.3-70b-versatile
+  pi-nvidia:
+    provider: nvidia
+    model: meta/llama-3.1-405b-instruct
 
 providers:
   openai:
@@ -22,3 +31,12 @@ providers:
   ollamacloud:
     base_url: https://ollama.com/v1
     api_key_env: OLLAMA_API_KEY
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+  groq:
+    base_url: https://api.groq.com/openai/v1
+    api_key_env: GROQ_API_KEY
+  nvidia:
+    base_url: https://integrate.api.nvidia.com/v1
+    api_key_env: NVIDIA_API_KEY

@@ -13,6 +13,9 @@ const (
 	ProviderOpenAI      = "openai"
 	ProviderAnthropic   = "anthropic"
 	ProviderOllamaCloud = "ollamacloud"
+	ProviderOpenRouter  = "openrouter"
+	ProviderGroq        = "groq"
+	ProviderNVIDIA      = "nvidia"
 )
 
 // maxUpstreamBody は上流通信で読み取る上限(32MiB)。

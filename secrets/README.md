@@ -17,6 +17,9 @@ api_keys:
   openai: sk-...
   anthropic: sk-ant-...
   ollamacloud: <ollama.comのAPIキー>
+  openrouter: sk-or-...       # openrouter.aiのAPIキー
+  groq: gsk_...               # console.groq.comのAPIキー
+  nvidia: nvapi-...           # build.nvidia.comのAPIキー
 ```
 
 ```bash

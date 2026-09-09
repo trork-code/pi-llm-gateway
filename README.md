@@ -25,6 +25,9 @@ Piから見るとただの「OpenAI互換API」。実際には裏側で本物の
 |---|---|---|
 | `openai` | ✅ | 素通し（model差し替えのみ） |
 | `ollamacloud` | ✅ | Ollama Cloud (`https://ollama.com/v1`)。OpenAI互換APIとして素通し |
+| `openrouter` | ✅ | OpenRouter (`https://openrouter.ai/api/v1`)。OpenAI互換APIとして素通し。modelは `vendor/model` 形式 |
+| `groq` | ✅ | Groq (`https://api.groq.com/openai/v1`)。OpenAI互換APIとして素通し |
+| `nvidia` | ✅ | NVIDIA NIM (`https://integrate.api.nvidia.com/v1`)。OpenAI互換APIとして素通し。modelは `vendor/model` 形式 |
 | `anthropic` | 🚧 | スタブ(501)。ロードマップstep4で実装 |
 
 OpenAI互換のAPIを持つ他社サービスは、`internal/providers/openai.go` の `NewOpenAICompat` でprovider名を差し替えるだけで追加できる。
