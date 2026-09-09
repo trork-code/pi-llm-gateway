@@ -10,7 +10,7 @@ func TestMiddleware(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	h := Middleware([]string{"secret-key", "other-key"})(next)
+	h := Middleware(func() []string { return []string{"secret-key", "other-key"} })(next)
 
 	t.Run("正しいキーは通る", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)

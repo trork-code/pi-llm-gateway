@@ -1,20 +1,27 @@
 // Command gateway はPi向けのOpenAI互換APIゲートウェイを起動する。
 //
-// 起動順序(pi-llm-gateway-architecture.md §4 / APIキー保護§7.5):
+// 起動順序:
 //  1. OSレベルの鍵保護を有効化(コアダンプ無効化)
-//  2. 環境変数を読む(PORT, BIND, AGE_IDENTITY_FILE/AGE_IDENTITY, AGE_PASSPHRASE, TLS_* など)
+//  2. 環境変数を読む(PORT, BIND, AGE_IDENTITY_*, AGE_PASSPHRASE, TLS_* など)
 //  3. secretsを復号する(age) — 失敗したら即座に起動を止める
 //  4. config/models.yamlを読んで検証する
 //  5. providerごとのadapterを構築し、registryへ登録する
 //  6. ルーター(chi)を組み立て、監査ログ/authミドルウェア/handlerを紐付ける
 //  7. HTTPサーバーを起動してリッスンを開始する(TLS/mTLSオプション付き)
+//
+// 鍵の保守:
+//   - `gateway -check` で起動前に鍵・configの検証ができる
+//   - SIGHUP または POST /admin/reload(gatewayキー認証)で鍵とconfigを再起動なしで差し替え
+//     (再読み込みに失敗した場合は旧状態を維持する fail-safe)
 package main
 
 import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +37,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 
+	"github.com/trork-code/pi-llm-gateway/internal/apierr"
 	"github.com/trork-code/pi-llm-gateway/internal/auth"
 	"github.com/trork-code/pi-llm-gateway/internal/config"
 	"github.com/trork-code/pi-llm-gateway/internal/handlers"
@@ -38,127 +47,95 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	var check bool
+	flag.BoolVar(&check, "check", false, "configと鍵を検証して終了する(サーバーは起動しない)")
+	flag.Parse()
+	if err := run(check); err != nil {
 		slog.Error("gatewayの起動に失敗しました", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+// identitySource は秘密鍵の取得経路。
+type identitySource struct {
+	kind   string // "file" / "cmd" / "env"
+	file   string
+	inline string
+	cmd    string
+}
+
+func run(check bool) error {
 	log := slog.Default()
 
-	// 1. OSレベルの鍵保護(多層防御④): コアダンプ無効化
-	// クラッシュ時にメモリ上の鍵がダンプファイルに残るのを防ぐ
+	// 1. OSレベルの鍵保護: コアダンプ無効化(クラッシュ時にメモリ上の鍵が残るのを防ぐ)
 	if err := hardening.DisableCoreDumps(); err != nil {
 		log.Warn("コアダンプの無効化に失敗しました(systemdのLimitCORE=0を推奨)", "error", err)
 	}
 
 	// 2. 環境変数
 	port := envOr("PORT", "8080")
-	bind := envOr("BIND", "127.0.0.1") // 多層防御⑤: 既定はループバックのみでリッスン
-	configFile := envOr("CONFIG_FILE", "config/models.yaml")
-	secretsFile := envOr("SECRETS_FILE", "secrets/secrets.yaml.age")
-	identityFile := os.Getenv("AGE_IDENTITY_FILE")
-	identityInline := os.Getenv("AGE_IDENTITY")  // 多層防御②: シークレットマネージャからの注入用
-	identityCmd := os.Getenv("AGE_IDENTITY_CMD") // 多層防御②: コマンド実行で取得(Vault/AWS/GCP等)
-	passphrase := os.Getenv("AGE_PASSPHRASE")    // 多層防御①: age -p で保護されたidentityの復号用
-
-	// 秘密鍵ソースは1つだけ指定する(意図しない鍵ソースの混在を防ぐため曖昧な指定は拒否)
-	var sources []string
-	if identityFile != "" {
-		sources = append(sources, "AGE_IDENTITY_FILE")
+	bind := envOr("BIND", "127.0.0.1") // 既定はループバックのみでリッスン
+	app := &appEnv{
+		configFile:  envOr("CONFIG_FILE", "config/models.yaml"),
+		secretsFile: envOr("SECRETS_FILE", "secrets/secrets.yaml.age"),
+		passphrase:  os.Getenv("AGE_PASSPHRASE"),
+		strictKeys:  os.Getenv("STRICT_KEYS") != "" || check,
+		maxAgeDays:  envInt("SECRETS_MAX_AGE_DAYS", 90),
 	}
-	if identityInline != "" {
-		sources = append(sources, "AGE_IDENTITY")
-	}
-	if identityCmd != "" {
-		sources = append(sources, "AGE_IDENTITY_CMD")
-	}
-	if len(sources) == 0 {
-		return errors.New("環境変数 AGE_IDENTITY_FILE / AGE_IDENTITY / AGE_IDENTITY_CMD のいずれかを設定してください(age秘密鍵を指定してください)")
-	}
-	if len(sources) > 1 {
-		return fmt.Errorf("秘密鍵の指定が重複しています: %s(1つだけ指定してください)", strings.Join(sources, ", "))
+	var err error
+	if app.ident, err = resolveIdentitySource(log); err != nil {
+		return err
 	}
 
-	// 秘密鍵ソース: ファイル(権限チェック付き)/コマンド実行/インライン(多層防御②③)
-	var identitySrc io.Reader
-	switch {
-	case identityFile != "":
-		if err := hardening.CheckOwnerOnly(identityFile); err != nil {
-			return err
-		}
-		f, err := os.Open(identityFile)
-		if err != nil {
-			return fmt.Errorf("age秘密鍵を開けません(%s): %w", identityFile, err)
-		}
-		defer f.Close()
-		identitySrc = f
-		log.Info("秘密鍵をファイルから読み込みます", "file", identityFile, "passphrase_protected", passphrase != "")
-	case identityCmd != "":
-		cmdCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		src, err := secrets.IdentityCommand(cmdCtx, identityCmd)
-		if err != nil {
-			return err
-		}
-		identitySrc = src
-		log.Info("秘密鍵をAGE_IDENTITY_CMDで取得します(シークレットマネージャ経由を想定)")
-	default:
-		identitySrc = strings.NewReader(identityInline)
-		log.Info("秘密鍵を環境変数から読み込みます(シークレットマネージャ経由を想定)")
+	// 3〜5. Runtime構築(鍵・config・adapter) — 起動時と再読み込みで同じ経路を使う
+	build := func() (*handlers.Runtime, error) {
+		return buildRuntime(log, app)
 	}
-
-	// 3. secrets復号 — 失敗したら即座に起動を止める(キーが無いまま動き出さないため)
-	log.Info("secretsを復号しています", "file", secretsFile)
-	sec, err := secrets.Load(secrets.LoadOptions{
-		EncryptedPath: secretsFile,
-		Identity:      identitySrc,
-		Passphrase:    passphrase,
-	})
+	rt, err := build()
 	if err != nil {
-		return fmt.Errorf("secretsの復号に失敗しました: %w", err)
-	}
-	gatewayKeys := sec.AllGatewayKeys()
-	if len(gatewayKeys) == 0 {
-		return errors.New("secretsに gateway_key / gateway_keys がありません")
+		return err
 	}
 
-	// 4. config読み込み+検証
-	cfg, err := config.Load(configFile)
-	if err != nil {
-		return fmt.Errorf("configの読み込みに失敗しました: %w", err)
-	}
-
-	// 5. providerごとのadapterを構築し、復号済み実キーを渡してregistryへ登録
-	reg := providers.NewRegistry()
-	for name, pc := range cfg.Providers {
-		key := sec.APIKeys[name]
-		if key == "" {
-			log.Warn("実APIキーがsecretsにありません(このproviderへのリクエストは失敗します)", "provider", name)
-		}
-		switch name {
-		case providers.ProviderOpenAI:
-			reg.Register(providers.NewOpenAI(pc.BaseURL, key))
-		case providers.ProviderOllamaCloud:
-			reg.Register(providers.NewOllamaCloud(pc.BaseURL, key))
-		case providers.ProviderAnthropic:
-			reg.Register(providers.NewAnthropic(pc.BaseURL, key))
-		default:
-			return fmt.Errorf("未知のprovider %q がconfigにあります", name)
-		}
+	// -check: 検証のみ行い、サーバーは起動しない
+	if check {
+		return reportCheck(log, rt, app)
 	}
 
 	// 6. ルーター組み立て: 監査ログ→auth→handler の順
-	h := handlers.New(cfg, reg, log)
+	h := handlers.New(rt, log)
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
 	r.Use(handlers.RequestLogger(log))
 	r.Use(chimw.Recoverer)
-	r.Use(auth.Middleware(gatewayKeys))
+	r.Use(auth.Middleware(h.GatewayKeys))
 	r.Post("/v1/chat/completions", h.ChatCompletions)
 	r.Get("/v1/models", h.Models)
+
+	// 鍵とconfigの再読み込み(ホットリロード)。失敗時は旧状態を維持する
+	reload := func() error {
+		nrt, err := build()
+		if err != nil {
+			return err
+		}
+		old := h.Current()
+		h.SwapRuntime(nrt)
+		if old != nil && old.Secrets != nil {
+			old.Secrets.Zero() // 差し替えられた旧鍵の残存を最小化(ベストエフォート)
+		}
+		log.Info("configと鍵を再読み込みしました",
+			"models", len(nrt.Config.Models),
+			"recipients", nrt.Secrets.IdentityRecipients)
+		return nil
+	}
+	r.Post("/admin/reload", func(w http.ResponseWriter, r *http.Request) {
+		if err := reload(); err != nil {
+			apierr.Write(w, http.StatusInternalServerError, err.Error(), "api_error", "reload_failed")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "reloaded"})
+	})
 
 	// 7. HTTPサーバー起動(TLS/mTLSオプション付き, graceful shutdown付き)
 	tlsCert := os.Getenv("TLS_CERT")
@@ -180,17 +157,31 @@ func run() error {
 		log.Info("TLSを有効化します", "mtls", os.Getenv("MTLS_CA") != "")
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
-		<-ctx.Done()
-		log.Info("シャットダウン要求を受信しました")
-		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(sctx)
+		for sig := range sigCh {
+			if sig == syscall.SIGHUP {
+				log.Info("SIGHUPを受信しました: 鍵とconfigを再読み込みします")
+				if err := reload(); err != nil {
+					log.Error("再読み込みに失敗しました(旧状態を維持します)", "error", err)
+				}
+				continue
+			}
+			log.Info("シャットダウン要求を受信しました")
+			sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(sctx)
+			return
+		}
 	}()
 
-	log.Info("gatewayを起動しました", "addr", srv.Addr, "tls", tlsCert != "", "default_model", cfg.DefaultModel, "models", len(cfg.Models))
+	log.Info("gatewayを起動しました",
+		"addr", srv.Addr,
+		"tls", tlsCert != "",
+		"default_model", rt.Config.DefaultModel,
+		"models", len(rt.Config.Models),
+		"recipients", rt.Secrets.IdentityRecipients)
 	var serveErr error
 	if tlsCert != "" {
 		serveErr = srv.ListenAndServeTLS(tlsCert, tlsKeyFile)
@@ -200,12 +191,192 @@ func run() error {
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return serveErr
 	}
-	// 停止後に鍵の残存を最小化(ベストエフォート。多層防御④)
-	sec.Zero()
+	// 停止後に鍵の残存を最小化(ベストエフォート)
+	if rt := h.Current(); rt.Secrets != nil {
+		rt.Secrets.Zero()
+	}
 	return nil
 }
 
-// buildTLSConfig はTLS(必要ならmTLS)の設定を組み立てる(多層防御⑤)。
+// appEnv は鍵とconfigの読み込みに必要な環境設定。
+type appEnv struct {
+	configFile  string
+	secretsFile string
+	passphrase  string
+	strictKeys  bool
+	maxAgeDays  int64
+	ident       identitySource
+}
+
+// buildRuntime はconfig・鍵・adapterを組み立て、不変スナップショットを返す。
+// 起動時とホットリロードの両方で同じ経路を使う。
+func buildRuntime(log *slog.Logger, app *appEnv) (*handlers.Runtime, error) {
+	cfg, err := config.Load(app.configFile)
+	if err != nil {
+		return nil, fmt.Errorf("configの読み込みに失敗しました: %w", err)
+	}
+
+	idSrc, closeFn, err := app.ident.open()
+	if err != nil {
+		return nil, err
+	}
+	if closeFn != nil {
+		defer closeFn()
+	}
+
+	sec, err := secrets.Load(secrets.LoadOptions{
+		EncryptedPath: app.secretsFile,
+		Identity:      idSrc,
+		Passphrase:    app.passphrase,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("secretsの復号に失敗しました: %w", err)
+	}
+
+	keys := sec.AllGatewayKeys()
+	if len(keys) == 0 {
+		return nil, errors.New("secretsに gateway_key / gateway_keys がありません")
+	}
+	log.Info("secretsを復号しました",
+		"recipients", sec.IdentityRecipients,
+		"gateway_keys", len(keys))
+
+	reg := providers.NewRegistry()
+	var missing []string
+	for name, pc := range cfg.Providers {
+		key := sec.APIKeys[name]
+		if key == "" {
+			missing = append(missing, name)
+		}
+		switch name {
+		case providers.ProviderOpenAI:
+			reg.Register(providers.NewOpenAI(pc.BaseURL, key))
+		case providers.ProviderOllamaCloud:
+			reg.Register(providers.NewOllamaCloud(pc.BaseURL, key))
+		case providers.ProviderAnthropic:
+			reg.Register(providers.NewAnthropic(pc.BaseURL, key))
+		default:
+			return nil, fmt.Errorf("未知のprovider %q がconfigにあります", name)
+		}
+	}
+	if len(missing) > 0 {
+		msg := fmt.Sprintf("api_keys に実キーがありません: %s", strings.Join(missing, ", "))
+		if app.strictKeys {
+			return nil, errors.New(msg + "(STRICT_KEYS=1 が有効のため起動を中止します)")
+		}
+		log.Warn(msg + "(該当providerへのリクエストは失敗します)")
+	}
+	warnSecretsAge(log, app.secretsFile, app.maxAgeDays)
+
+	return &handlers.Runtime{
+		Config:      cfg,
+		Registry:    reg,
+		Secrets:     sec,
+		GatewayKeys: keys,
+	}, nil
+}
+
+// resolveIdentitySource は秘密鍵の取得経路を環境変数から決める。
+// ファイル/環境変数/コマンド実行の3系統で、重複指定は曖昧さ回避のため拒否する。
+func resolveIdentitySource(log *slog.Logger) (identitySource, error) {
+	file := os.Getenv("AGE_IDENTITY_FILE")
+	inline := os.Getenv("AGE_IDENTITY")
+	cmd := os.Getenv("AGE_IDENTITY_CMD")
+
+	var found []string
+	if file != "" {
+		found = append(found, "AGE_IDENTITY_FILE")
+	}
+	if inline != "" {
+		found = append(found, "AGE_IDENTITY")
+	}
+	if cmd != "" {
+		found = append(found, "AGE_IDENTITY_CMD")
+	}
+	if len(found) == 0 {
+		return identitySource{}, errors.New("環境変数 AGE_IDENTITY_FILE / AGE_IDENTITY / AGE_IDENTITY_CMD のいずれかを設定してください(age秘密鍵を指定してください)")
+	}
+	if len(found) > 1 {
+		return identitySource{}, fmt.Errorf("秘密鍵の指定が重複しています: %s(1つだけ指定してください)", strings.Join(found, ", "))
+	}
+
+	switch found[0] {
+	case "AGE_IDENTITY_FILE":
+		log.Info("秘密鍵をファイルから読み込みます", "file", file, "passphrase_protected", os.Getenv("AGE_PASSPHRASE") != "")
+		return identitySource{kind: "file", file: file}, nil
+	case "AGE_IDENTITY_CMD":
+		log.Info("秘密鍵をAGE_IDENTITY_CMDで取得します(シークレットマネージャ経由を想定)")
+		return identitySource{kind: "cmd", cmd: cmd}, nil
+	default:
+		log.Info("秘密鍵を環境変数から読み込みます(シークレットマネージャ経由を想定)")
+		return identitySource{kind: "env", inline: inline}, nil
+	}
+}
+
+// open は秘密鍵を読み取り可能な状態にしてio.Readerを返す。
+// 再読み込みのたびに呼ばれるため、シークレットマネージャ経由(cmd)は都度最新の鍵を取得する。
+func (s identitySource) open() (io.Reader, func(), error) {
+	switch s.kind {
+	case "file":
+		if err := hardening.CheckOwnerOnly(s.file); err != nil {
+			return nil, nil, err
+		}
+		f, err := os.Open(s.file)
+		if err != nil {
+			return nil, nil, fmt.Errorf("age秘密鍵を開けません(%s): %w", s.file, err)
+		}
+		return f, func() { _ = f.Close() }, nil
+	case "cmd":
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		r, err := secrets.IdentityCommand(ctx, s.cmd)
+		if err != nil {
+			cancel()
+			return nil, nil, err
+		}
+		return r, cancel, nil
+	case "env":
+		return strings.NewReader(s.inline), func() {}, nil
+	default:
+		return nil, nil, fmt.Errorf("未知のidentityソース: %s", s.kind)
+	}
+}
+
+// reportCheck は-gatherなしに検証結果だけを報告して終了する(-checkモード)。
+func reportCheck(log *slog.Logger, rt *handlers.Runtime, app *appEnv) error {
+	ageDays := int64(-1)
+	if info, err := os.Stat(app.secretsFile); err == nil {
+		ageDays = int64(time.Since(info.ModTime()).Hours() / 24)
+	}
+	log.Info("check結果: 検証OK",
+		"models", len(rt.Config.Models),
+		"providers", len(rt.Config.Providers),
+		"recipients", rt.Secrets.IdentityRecipients,
+		"secrets_file_age_days", ageDays,
+		"strict_keys", app.strictKeys,
+	)
+	warnSecretsAge(log, app.secretsFile, app.maxAgeDays)
+	return nil
+}
+
+// warnSecretsAge はsecretsファイルがローテーション期間を過ぎていたら警告する(運用⑨)。
+func warnSecretsAge(log *slog.Logger, path string, maxAgeDays int64) {
+	if maxAgeDays <= 0 {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	days := int64(time.Since(info.ModTime()).Hours() / 24)
+	if days > maxAgeDays {
+		log.Warn("secretsファイルが古くなっています。ローテーションを検討してください",
+			"age_days", days,
+			"threshold_days", maxAgeDays,
+			"hint", "bash scripts/rotate-secrets.sh <recipient>")
+	}
+}
+
+// buildTLSConfig はTLS(必要ならmTLS)の設定を組み立てる。
 // MTLS_CAが指定された場合、そのCAが署名したクライアント証明書を持つ接続のみ許可する。
 func buildTLSConfig(clientCAFile string) (*tls.Config, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
@@ -228,6 +399,15 @@ func buildTLSConfig(clientCAFile string) (*tls.Config, error) {
 func envOr(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
+	}
+	return def
+}
+
+func envInt(key string, def int64) int64 {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
 	}
 	return def
 }

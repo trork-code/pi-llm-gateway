@@ -32,6 +32,16 @@ jobs:
       - name: Test
         run: go test ./...
 
+  # ローテーションスクリプト自体の破損を検知する(鍵ライフサイクルの要の保険)
+  shellcheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check scripts
+        run: shellcheck scripts/*.sh
+
   # 多層防御⑧: 平文キーの誤コミットを検知してブロックする(secret scanning)
   secret-scan:
     runs-on: ubuntu-latest

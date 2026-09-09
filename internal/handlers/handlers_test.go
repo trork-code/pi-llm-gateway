@@ -34,10 +34,17 @@ func (stubAdapter) ChatStream(ctx context.Context, req *providers.ChatRequest) (
 
 func newTestHandlers(t *testing.T) *Handlers {
 	t.Helper()
+	reg := providers.NewRegistry()
+	reg.Register(stubAdapter{})
+	return New(newTestRuntime(t, "pi-fast", "gpt-4.1-mini"), slog.Default())
+}
+
+func newTestRuntime(t *testing.T, alias, model string) *Runtime {
+	t.Helper()
 	cfg := &config.Config{
-		DefaultModel: "pi-fast",
+		DefaultModel: alias,
 		Models: map[string]config.ModelConfig{
-			"pi-fast": {Provider: "openai", Model: "gpt-4.1-mini"},
+			alias: {Provider: "openai", Model: model},
 		},
 		Providers: map[string]config.ProviderConfig{
 			"openai": {BaseURL: "http://localhost:1"},
@@ -45,7 +52,44 @@ func newTestHandlers(t *testing.T) *Handlers {
 	}
 	reg := providers.NewRegistry()
 	reg.Register(stubAdapter{})
-	return New(cfg, reg, slog.Default())
+	return &Runtime{Config: cfg, Registry: reg, GatewayKeys: []string{"k"}}
+}
+
+func TestSwapRuntime(t *testing.T) {
+	h := New(newTestRuntime(t, "pi-fast", "gpt-4.1-mini"), slog.Default())
+
+	// 差し替え前は旧エイリアスで応答
+	if ids := modelIDs(t, h); len(ids) != 1 || ids[0] != "pi-fast" {
+		t.Fatalf("ids = %v", ids)
+	}
+
+	// 差し替え後は新エイリアスで応答する
+	h.SwapRuntime(newTestRuntime(t, "pi-slow", "other-model"))
+	if ids := modelIDs(t, h); len(ids) != 1 || ids[0] != "pi-slow" {
+		t.Fatalf("after swap: ids = %v", ids)
+	}
+}
+
+func modelIDs(t *testing.T, h *Handlers) []string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	h.Models(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var got struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(got.Data))
+	for _, m := range got.Data {
+		id, _ := m["id"].(string)
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func TestModels(t *testing.T) {

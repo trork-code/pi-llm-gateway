@@ -26,9 +26,11 @@ import (
 
 // Secrets は復号後の実キー一式。プロセスメモリ上にのみ存在する。
 type Secrets struct {
-	GatewayKey  string            `yaml:"gateway_key"`  // 単一キー形式
-	GatewayKeys []string          `yaml:"gateway_keys"` // 複数キー(将来のキーごとアクセス制御に向けた余地)
-	APIKeys     map[string]string `yaml:"api_keys"`     // provider名 → 実APIキー
+	Version            int               `yaml:"version"`      // 将来のスキーマ変更に備えた管理番号(未対応の値は拒否)
+	GatewayKey         string            `yaml:"gateway_key"`  // 単一キー形式
+	GatewayKeys        []string          `yaml:"gateway_keys"` // 複数キー(将来のキーごとアクセス制御に向けた余地)
+	APIKeys            map[string]string `yaml:"api_keys"`     // provider名 → 実APIキー
+	IdentityRecipients []string          `yaml:"-"`            // 使用中identityの公開鍵(ログ・検証用。非秘匿。Loadが設定する)
 }
 
 // AllGatewayKeys は単一/複数の両形式を吸収して有効なgatewayキー一覧を返す。
@@ -44,6 +46,7 @@ func (s *Secrets) AllGatewayKeys() []string {
 // 注: Goの文字列はイミュータブルでGCがコピーを持ち回るため完全な消去は不可能。
 // 長命な参照を早く切って、メモリダンプ・検査時に鍵が見える期間を短くする効果を狙う。
 func (s *Secrets) Zero() {
+	s.Version = 0
 	s.GatewayKey = ""
 	for i := range s.GatewayKeys {
 		s.GatewayKeys[i] = ""
@@ -53,6 +56,7 @@ func (s *Secrets) Zero() {
 		s.APIKeys[k] = ""
 	}
 	s.APIKeys = nil
+	s.IdentityRecipients = nil
 }
 
 // LoadOptions はsecrets.yaml.ageの復号に必要な入力。
@@ -116,7 +120,24 @@ func Load(opts LoadOptions) (*Secrets, error) {
 	if err != nil {
 		return nil, fmt.Errorf("復号後YAMLの解析に失敗: %w", err)
 	}
+	// スキーマの将来変更に備えたバージョン管理(未指定は0=version 1扱いで互換維持)
+	if s.Version > 1 {
+		return nil, fmt.Errorf("secrets.yaml の version %d は未対応です(対応: 1)", s.Version)
+	}
+	s.IdentityRecipients = publicRecipients(identities)
 	return &s, nil
+}
+
+// publicRecipients はidentityの公開鍵(非秘匿・ログ表示用)を取り出す。
+// 運用者が「どの鍵でgatewayが動いているか」を、鍵そのものを晒さずに確認できるようにする。
+func publicRecipients(ids []age.Identity) []string {
+	var out []string
+	for _, id := range ids {
+		if xi, ok := id.(interface{ Recipient() *age.X25519Recipient }); ok {
+			out = append(out, xi.Recipient().String())
+		}
+	}
+	return out
 }
 
 // parseIdentities はidentityファイルの内容からage.Identity一覧を取り出す。

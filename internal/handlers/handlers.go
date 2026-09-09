@@ -10,25 +10,56 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/trork-code/pi-llm-gateway/internal/apierr"
 	"github.com/trork-code/pi-llm-gateway/internal/config"
 	"github.com/trork-code/pi-llm-gateway/internal/providers"
+	"github.com/trork-code/pi-llm-gateway/internal/secrets"
 	"github.com/trork-code/pi-llm-gateway/internal/sse"
 )
 
 const maxBodyBytes = 10 << 20 // 10MiB
 
-type Handlers struct {
-	Config   *config.Config
-	Registry *providers.Registry
-	Log      *slog.Logger
+// Runtime はリクエスト処理に使う不変スナップショット。
+// 鍵とconfigの再読み込み(ホットリロード)時は丸ごと差し替える。
+type Runtime struct {
+	Config      *config.Config
+	Registry    *providers.Registry
+	Secrets     *secrets.Secrets // 再読み込み時に旧鍵をゼロ化するため保持
+	GatewayKeys []string
 }
 
-func New(cfg *config.Config, reg *providers.Registry, log *slog.Logger) *Handlers {
-	return &Handlers{Config: cfg, Registry: reg, Log: log}
+type Handlers struct {
+	rt  *atomic.Pointer[Runtime]
+	Log *slog.Logger
 }
+
+// New は初期Runtimeでhandler群を作る。
+func New(rt *Runtime, log *slog.Logger) *Handlers {
+	p := new(atomic.Pointer[Runtime])
+	p.Store(rt)
+	return &Handlers{rt: p, Log: log}
+}
+
+// SwapRuntime は鍵・configを新しいスナップショットへアトミックに差し替える。
+// 以後のリクエストは新しいRuntimeを使う。進行中のリクエストは旧Runtimeを参照し続ける。
+func (h *Handlers) SwapRuntime(rt *Runtime) { h.rt.Store(rt) }
+
+func (h *Handlers) current() *Runtime {
+	rt := h.rt.Load()
+	if rt == nil {
+		panic("runtimeが未初期化です")
+	}
+	return rt
+}
+
+// Current は現在のRuntimeを返す(旧鍵のゼロ化など、main側の管理用)。
+func (h *Handlers) Current() *Runtime { return h.current() }
+
+// GatewayKeys は現在のgatewayキー一覧(authミドルウェア用)。
+func (h *Handlers) GatewayKeys() []string { return h.current().GatewayKeys }
 
 // ChatCompletions は POST /v1/chat/completions の本体。
 func (h *Handlers) ChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +84,8 @@ func (h *Handlers) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		)
 	}()
 
+	rt := h.current()
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -72,7 +105,7 @@ func (h *Handlers) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// model resolver: エイリアス → (provider名, 実モデル名)
-	mc, ok := h.Config.Resolve(in.Model)
+	mc, ok := rt.Config.Resolve(in.Model)
 	if !ok {
 		apierr.Write(w, http.StatusBadRequest,
 			fmt.Sprintf("unknown model: %q", in.Model), "invalid_request_error", "model_not_found")
@@ -84,7 +117,7 @@ func (h *Handlers) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	streaming = in.Stream
 
 	// providers registry からadapterを取り出す
-	ad, ok := h.Registry.Get(mc.Provider)
+	ad, ok := rt.Registry.Get(mc.Provider)
 	if !ok {
 		// config検証済みなので通常起きない
 		apierr.Write(w, http.StatusInternalServerError,
@@ -156,8 +189,9 @@ func (h *Handlers) writeAdapterError(w http.ResponseWriter, err error) {
 
 // Models は GET /v1/models — エイリアス一覧をOpenAI互換形式で返す。
 func (h *Handlers) Models(w http.ResponseWriter, r *http.Request) {
-	aliases := make([]string, 0, len(h.Config.Models))
-	for alias := range h.Config.Models {
+	rt := h.current()
+	aliases := make([]string, 0, len(rt.Config.Models))
+	for alias := range rt.Config.Models {
 		aliases = append(aliases, alias)
 	}
 	sort.Strings(aliases)
@@ -169,7 +203,7 @@ func (h *Handlers) Models(w http.ResponseWriter, r *http.Request) {
 			ID:      alias,
 			Object:  "model",
 			Created: now,
-			OwnedBy: h.Config.Models[alias].Provider,
+			OwnedBy: rt.Config.Models[alias].Provider,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")

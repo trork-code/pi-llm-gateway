@@ -67,6 +67,28 @@ func TestLoad_PlainIdentity(t *testing.T) {
 	if sec.APIKeys["ollamacloud"] != "ollama-test-key" {
 		t.Fatalf("api_keys = %v", sec.APIKeys)
 	}
+	// identityの公開鍵(非秘匿)が取り出されていること(運用時の可視化用)
+	if len(sec.IdentityRecipients) != 1 || !strings.HasPrefix(sec.IdentityRecipients[0], "age1") {
+		t.Fatalf("IdentityRecipients = %v", sec.IdentityRecipients)
+	}
+	// version未指定は互換のためversion 1扱い
+	if sec.Version != 0 {
+		t.Fatalf("version = %d", sec.Version)
+	}
+}
+
+func TestLoad_UnknownVersion(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeTemp(t, encryptTo(t, id.Recipient(), []byte("version: 2\ngateway_key: x\n")))
+	if _, err := Load(LoadOptions{
+		EncryptedPath: path,
+		Identity:      strings.NewReader(id.String()),
+	}); err == nil {
+		t.Fatal("未対応のversionが受け入れられました")
+	}
 }
 
 func TestLoad_PassphraseProtectedIdentity(t *testing.T) {

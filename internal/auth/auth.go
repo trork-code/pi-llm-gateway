@@ -1,5 +1,5 @@
-// Package auth はリクエストヘッダのgatewayキー(Authorization: Bearer)を検証する。
-// 複数のgatewayキーを許容する(将来のキーごとアクセス制御に向けた余地。アーキテクチャ仕様書§7)。
+// authミドルウェア。gatewayキーは再読み込み(ホットリロード)で変わる可能性があるため、
+// キー一覧は関数で受け取る。
 package auth
 
 import (
@@ -12,10 +12,10 @@ import (
 
 // Middleware は一致するgatewayキーを持たないリクエストを401で止める。
 // ここを通らないとhandlerには一切進めない。
-func Middleware(gatewayKeys []string) func(http.Handler) http.Handler {
+func Middleware(gatewayKeys func() []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !matchAny(r.Header.Get("Authorization"), gatewayKeys) {
+			if !matchAny(r.Header.Get("Authorization"), gatewayKeys()) {
 				apierr.Write(w, http.StatusUnauthorized,
 					"認証に失敗しました(gatewayキーが不正です)", "authentication_error", "invalid_api_key")
 				return

@@ -12,6 +12,7 @@ Piから見るとただの「OpenAI互換API」。実際には裏側で本物の
 |---|---|
 | `POST /v1/chat/completions` | リクエストを上流プロバイダーへ中継。streaming / 非streaming 両対応 |
 | `GET /v1/models` | `config/models.yaml` のエイリアス一覧をOpenAI互換形式で返す |
+| `POST /admin/reload` | 鍵とconfigを再読み込み（gatewayキー認証）。SIGHUPでも可。失敗時は旧状態維持 |
 
 - **認証** — `Authorization: Bearer <gatewayキー>` をチェック。不一致は401
 - **モデル解決** — `model`（例: `pi-default`）を `config/models.yaml` で実プロバイダー/モデルに変換
@@ -104,8 +105,41 @@ ExecStart=/usr/local/bin/pi-llm-gateway
 | `AGE_IDENTITY` | （任意） | 秘密鍵の内容そのもの(シークレットマネージャ経由の注入用) |
 | `AGE_IDENTITY_CMD` | （任意） | コマンドの標準出力を秘密鍵として利用(Vault/AWS/GCP等)。鍵をディスクに常駐させない |
 | `AGE_PASSPHRASE` | （任意） | `age -p`で保護したidentityの復号パスフレーズ |
+| `STRICT_KEYS` | （任意） | `1`を指定すると、1つでもapi_keysが欠けているproviderがあったら起動を中止 |
+| `SECRETS_MAX_AGE_DAYS` | `90` | secretsファイルの経過日数がこの値を超えたらローテーションを警告（`0`で無効） |
 | `TLS_CERT` / `TLS_KEY` | （任意） | 指定するとHTTPSで起動 |
 | `MTLS_CA` | （任意） | クライアント証明書検証用CA。指定するとmTLS必須になる |
+
+### 鍵の再読み込み（ホットリロード）
+
+gatewayを**再起動せずに**鍵とconfigを差し替えられる:
+
+```bash
+# (a) SIGHUPを送る（Linux/macOS）
+kill -HUP $(pgrep pi-llm-gateway)
+
+# (b) gatewayキー認証付きの管理エンドポイント
+curl -X POST http://127.0.0.1:8080/admin/reload -H "Authorization: Bearer <gatewayキー>"
+```
+
+- 再読み込み中に復号・検証が失敗した場合は**旧状態を維持する**（fail-safe）
+- 差し替え後、旧鍵はメモリからゼロ化（ベストエフォート）
+- `AGE_IDENTITY_CMD` 構成なら、再読み込みのたびにシークレットマネージャから最新の鍵を取得する
+- 起動前・再起動後の確認は `gateway -check` で実施できる（復号可否・config・キー欠落・鍵齢を報告）
+
+### 定期ローテーション（systemd timer例）
+
+```ini
+# /etc/systemd/system/pi-gateway-rotate.timer
+[Timer]
+OnCalendar=monthly
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+
+※ 鍵値の編集を伴う自動ローテーションは、シークレットマネージャ（`AGE_IDENTITY_CMD`）側で
+管理する構成が向く。編集不要のidentityローテーションのみtimer化するのが安全。
 
 ## 開発
 
