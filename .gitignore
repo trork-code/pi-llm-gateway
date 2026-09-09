@@ -3,6 +3,7 @@
 *.env
 secrets.yaml
 secrets/*.yaml
+secrets/*.bak
 
 # --- age 秘密鍵(identity)はリポジトリに置かない ---
 identity.txt

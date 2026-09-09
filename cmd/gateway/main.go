@@ -59,15 +59,32 @@ func run() error {
 	configFile := envOr("CONFIG_FILE", "config/models.yaml")
 	secretsFile := envOr("SECRETS_FILE", "secrets/secrets.yaml.age")
 	identityFile := os.Getenv("AGE_IDENTITY_FILE")
-	identityInline := os.Getenv("AGE_IDENTITY") // 多層防御②: シークレットマネージャからの注入用
-	passphrase := os.Getenv("AGE_PASSPHRASE")   // 多層防御①: age -p で保護されたidentityの復号用
-	if identityFile == "" && identityInline == "" {
-		return errors.New("環境変数 AGE_IDENTITY_FILE(または AGE_IDENTITY)が未設定です(age秘密鍵を指定してください)")
+	identityInline := os.Getenv("AGE_IDENTITY")  // 多層防御②: シークレットマネージャからの注入用
+	identityCmd := os.Getenv("AGE_IDENTITY_CMD") // 多層防御②: コマンド実行で取得(Vault/AWS/GCP等)
+	passphrase := os.Getenv("AGE_PASSPHRASE")    // 多層防御①: age -p で保護されたidentityの復号用
+
+	// 秘密鍵ソースは1つだけ指定する(意図しない鍵ソースの混在を防ぐため曖昧な指定は拒否)
+	var sources []string
+	if identityFile != "" {
+		sources = append(sources, "AGE_IDENTITY_FILE")
+	}
+	if identityInline != "" {
+		sources = append(sources, "AGE_IDENTITY")
+	}
+	if identityCmd != "" {
+		sources = append(sources, "AGE_IDENTITY_CMD")
+	}
+	if len(sources) == 0 {
+		return errors.New("環境変数 AGE_IDENTITY_FILE / AGE_IDENTITY / AGE_IDENTITY_CMD のいずれかを設定してください(age秘密鍵を指定してください)")
+	}
+	if len(sources) > 1 {
+		return fmt.Errorf("秘密鍵の指定が重複しています: %s(1つだけ指定してください)", strings.Join(sources, ", "))
 	}
 
-	// 秘密鍵ソース: ファイル(権限チェック付き)またはインライン(多層防御②③)
+	// 秘密鍵ソース: ファイル(権限チェック付き)/コマンド実行/インライン(多層防御②③)
 	var identitySrc io.Reader
-	if identityFile != "" {
+	switch {
+	case identityFile != "":
 		if err := hardening.CheckOwnerOnly(identityFile); err != nil {
 			return err
 		}
@@ -78,7 +95,16 @@ func run() error {
 		defer f.Close()
 		identitySrc = f
 		log.Info("秘密鍵をファイルから読み込みます", "file", identityFile, "passphrase_protected", passphrase != "")
-	} else {
+	case identityCmd != "":
+		cmdCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		src, err := secrets.IdentityCommand(cmdCtx, identityCmd)
+		if err != nil {
+			return err
+		}
+		identitySrc = src
+		log.Info("秘密鍵をAGE_IDENTITY_CMDで取得します(シークレットマネージャ経由を想定)")
+	default:
 		identitySrc = strings.NewReader(identityInline)
 		log.Info("秘密鍵を環境変数から読み込みます(シークレットマネージャ経由を想定)")
 	}
