@@ -48,6 +48,10 @@ AGE_IDENTITY_CMD="aws secretsmanager get-secret-value --secret-id pi-gateway --q
 
 # (c) 環境変数に直接注入(シークレットマネージャがプロセス環境を制御できる場合)
 AGE_IDENTITY=<秘密鍵の内容> ./gateway
+
+# (d) 復号自体をage CLIに委譲(SECRETS_DECRYPT_CMD)
+#     YubiKeyプラグイン等、「鍵の実体がハードウェアに留まる」運用に対応
+SECRETS_DECRYPT_CMD="age -d -i /path/to/yubikey-identity.txt secrets/secrets.yaml.age" ./gateway
 ```
 
 ## identity(秘密鍵)のローテーション（多層防御⑨）
