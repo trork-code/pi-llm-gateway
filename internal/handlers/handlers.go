@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/trork-code/pi-llm-gateway/internal/apierr"
+	"github.com/trork-code/pi-llm-gateway/internal/audit"
 	"github.com/trork-code/pi-llm-gateway/internal/config"
 	"github.com/trork-code/pi-llm-gateway/internal/providers"
 	"github.com/trork-code/pi-llm-gateway/internal/secrets"
@@ -32,15 +34,24 @@ type Runtime struct {
 }
 
 type Handlers struct {
-	rt  *atomic.Pointer[Runtime]
-	Log *slog.Logger
+	rt    *atomic.Pointer[Runtime]
+	Audit *audit.Chain
+	Log   *slog.Logger
 }
 
-// New は初期Runtimeでhandler群を作る。
-func New(rt *Runtime, log *slog.Logger) *Handlers {
+// New は初期Runtimeと監査チェーンでhandler群を作る(auditはnil可でその際はチェーンなし)。
+func New(rt *Runtime, log *slog.Logger, auditChain *audit.Chain) *Handlers {
 	p := new(atomic.Pointer[Runtime])
 	p.Store(rt)
-	return &Handlers{rt: p, Log: log}
+	return &Handlers{rt: p, Audit: auditChain, Log: log}
+}
+
+// auditNext は監査エントリをチェーンに追加しIDを返す(チェーン未設定時は空)。
+func (h *Handlers) auditNext(fields map[string]string) string {
+	if h.Audit == nil {
+		return ""
+	}
+	return h.Audit.Next(fields)
 }
 
 // SwapRuntime は鍵・configを新しいスナップショットへアトミックに差し替える。
@@ -81,6 +92,15 @@ func (h *Handlers) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			"stream", streaming,
 			"status", sw.status,
 			"duration_ms", time.Since(start).Milliseconds(),
+			"audit_id", h.auditNext(map[string]string{
+				"route":       "chat_completions",
+				"alias":       alias,
+				"provider":    providerName,
+				"model":       realModel,
+				"stream":      strconv.FormatBool(streaming),
+				"status":      strconv.Itoa(sw.status),
+				"duration_ms": strconv.FormatInt(time.Since(start).Milliseconds(), 10),
+			}),
 		)
 	}()
 

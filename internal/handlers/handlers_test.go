@@ -36,7 +36,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 	t.Helper()
 	reg := providers.NewRegistry()
 	reg.Register(stubAdapter{})
-	return New(newTestRuntime(t, "pi-fast", "gpt-4.1-mini"), slog.Default())
+	return New(newTestRuntime(t, "pi-fast", "gpt-4.1-mini"), slog.Default(), nil)
 }
 
 func newTestRuntime(t *testing.T, alias, model string) *Runtime {
@@ -56,7 +56,7 @@ func newTestRuntime(t *testing.T, alias, model string) *Runtime {
 }
 
 func TestSwapRuntime(t *testing.T) {
-	h := New(newTestRuntime(t, "pi-fast", "gpt-4.1-mini"), slog.Default())
+	h := New(newTestRuntime(t, "pi-fast", "gpt-4.1-mini"), slog.Default(), nil)
 
 	// 差し替え前は旧エイリアスで応答
 	if ids := modelIDs(t, h); len(ids) != 1 || ids[0] != "pi-fast" {
@@ -168,7 +168,7 @@ func TestRequestLogger(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	RequestLogger(log)(next).ServeHTTP(rec, req)
+	RequestLogger(log, nil)(next).ServeHTTP(rec, req)
 	if rec.Code != http.StatusTeapot {
 		t.Fatalf("status = %d, want 418", rec.Code)
 	}

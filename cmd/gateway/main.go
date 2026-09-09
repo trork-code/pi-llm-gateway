@@ -1,10 +1,10 @@
 // Command gateway はPi向けのOpenAI互換APIゲートウェイを起動する。
 //
 // 起動順序:
-//  1. OSレベルの鍵保護を有効化(コアダンプ無効化)
+//  1. OSレベルの鍵保護を有効化(コアダンプ無効化・鍵メモリのmlock保護)
 //  2. 環境変数を読む(PORT, BIND, AGE_IDENTITY_*, AGE_PASSPHRASE, TLS_* など)
 //  3. secretsを復号する(age) — 失敗したら即座に起動を止める
-//  4. config/models.yamlを読んで検証する
+//  4. config/models.yamlを読んで検証し、上流egress許可リストを設定する
 //  5. providerごとのadapterを構築し、registryへ登録する
 //  6. ルーター(chi)を組み立て、監査ログ/authミドルウェア/handlerを紐付ける
 //  7. HTTPサーバーを起動してリッスンを開始する(TLS/mTLSオプション付き)
@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -34,10 +35,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awnumar/memguard"
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/trork-code/pi-llm-gateway/internal/apierr"
+	"github.com/trork-code/pi-llm-gateway/internal/audit"
 	"github.com/trork-code/pi-llm-gateway/internal/auth"
 	"github.com/trork-code/pi-llm-gateway/internal/config"
 	"github.com/trork-code/pi-llm-gateway/internal/handlers"
@@ -56,6 +59,17 @@ func main() {
 	}
 }
 
+// appEnv は鍵とconfigの読み込みに必要な環境設定。
+type appEnv struct {
+	configFile  string
+	secretsFile string
+	passphrase  string
+	decryptCmd  string // SECRETS_DECRYPT_CMD(age CLI等による復号。YubiKeyプラグイン連携)
+	strictKeys  bool
+	maxAgeDays  int64
+	ident       identitySource
+}
+
 // identitySource は秘密鍵の取得経路。
 type identitySource struct {
 	kind   string // "file" / "cmd" / "env"
@@ -67,7 +81,10 @@ type identitySource struct {
 func run(check bool) error {
 	log := slog.Default()
 
-	// 1. OSレベルの鍵保護: コアダンプ無効化(クラッシュ時にメモリ上の鍵が残るのを防ぐ)
+	// 1. OSレベルの鍵保護
+	// - コアダンプ無効化(クラッシュ時にメモリ上の鍵が残るのを防ぐ)
+	// - 正常終了時にmemguardの保護メモリ(実APIキー)をすべてパージ
+	defer memguard.Purge()
 	if err := hardening.DisableCoreDumps(); err != nil {
 		log.Warn("コアダンプの無効化に失敗しました(systemdのLimitCORE=0を推奨)", "error", err)
 	}
@@ -79,12 +96,18 @@ func run(check bool) error {
 		configFile:  envOr("CONFIG_FILE", "config/models.yaml"),
 		secretsFile: envOr("SECRETS_FILE", "secrets/secrets.yaml.age"),
 		passphrase:  os.Getenv("AGE_PASSPHRASE"),
+		decryptCmd:  os.Getenv("SECRETS_DECRYPT_CMD"),
 		strictKeys:  os.Getenv("STRICT_KEYS") != "" || check,
 		maxAgeDays:  envInt("SECRETS_MAX_AGE_DAYS", 90),
 	}
-	var err error
-	if app.ident, err = resolveIdentitySource(log); err != nil {
-		return err
+	if app.decryptCmd != "" {
+		// 復号をage CLI等に委譲する場合、identityはコマンド側で解決される
+		log.Info("secretsを外部コマンドで復号します(SECRETS_DECRYPT_CMD。YubiKeyプラグイン等に対応)")
+	} else {
+		var err error
+		if app.ident, err = resolveIdentitySource(log); err != nil {
+			return err
+		}
 	}
 
 	// 3〜5. Runtime構築(鍵・config・adapter) — 起動時と再読み込みで同じ経路を使う
@@ -102,13 +125,17 @@ func run(check bool) error {
 	}
 
 	// 6. ルーター組み立て: 監査ログ→auth→handler の順
-	h := handlers.New(rt, log)
+	auditChain, err := audit.NewChain()
+	if err != nil {
+		return fmt.Errorf("監査チェーンの初期化に失敗しました: %w", err)
+	}
+	h := handlers.New(rt, log, auditChain)
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
-	r.Use(handlers.RequestLogger(log))
+	r.Use(handlers.RequestLogger(log, auditChain))
 	r.Use(chimw.Recoverer)
-	r.Use(auth.Middleware(h.GatewayKeys))
+	r.Use(auth.MiddlewareConfig(h.GatewayKeys, int(envInt("AUTH_MAX_FAILURES", 20)), time.Minute))
 	r.Post("/v1/chat/completions", h.ChatCompletions)
 	r.Get("/v1/models", h.Models)
 
@@ -191,21 +218,11 @@ func run(check bool) error {
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return serveErr
 	}
-	// 停止後に鍵の残存を最小化(ベストエフォート)
+	// 停止後に鍵の残存を最小化(ベストエフォート。memguard.Purgeが保護メモリも掃除する)
 	if rt := h.Current(); rt.Secrets != nil {
 		rt.Secrets.Zero()
 	}
 	return nil
-}
-
-// appEnv は鍵とconfigの読み込みに必要な環境設定。
-type appEnv struct {
-	configFile  string
-	secretsFile string
-	passphrase  string
-	strictKeys  bool
-	maxAgeDays  int64
-	ident       identitySource
 }
 
 // buildRuntime はconfig・鍵・adapterを組み立て、不変スナップショットを返す。
@@ -216,19 +233,28 @@ func buildRuntime(log *slog.Logger, app *appEnv) (*handlers.Runtime, error) {
 		return nil, fmt.Errorf("configの読み込みに失敗しました: %w", err)
 	}
 
-	idSrc, closeFn, err := app.ident.open()
-	if err != nil {
+	// 上流egress許可リスト: 実キーが送られる先を設定済みproviderのドメインに限定する
+	if err := applyEgressAllowlist(log, cfg); err != nil {
 		return nil, err
 	}
-	if closeFn != nil {
-		defer closeFn()
+
+	opts := secrets.LoadOptions{
+		EncryptedPath:  app.secretsFile,
+		Passphrase:     app.passphrase,
+		DecryptCommand: app.decryptCmd,
+	}
+	if app.decryptCmd == "" {
+		idSrc, closeFn, err := app.ident.open()
+		if err != nil {
+			return nil, err
+		}
+		if closeFn != nil {
+			defer closeFn()
+		}
+		opts.Identity = idSrc
 	}
 
-	sec, err := secrets.Load(secrets.LoadOptions{
-		EncryptedPath: app.secretsFile,
-		Identity:      idSrc,
-		Passphrase:    app.passphrase,
-	})
+	sec, err := secrets.Load(opts)
 	if err != nil {
 		return nil, fmt.Errorf("secretsの復号に失敗しました: %w", err)
 	}
@@ -253,12 +279,6 @@ func buildRuntime(log *slog.Logger, app *appEnv) (*handlers.Runtime, error) {
 			reg.Register(providers.NewOpenAI(pc.BaseURL, key))
 		case providers.ProviderOllamaCloud:
 			reg.Register(providers.NewOllamaCloud(pc.BaseURL, key))
-		case providers.ProviderOpenRouter:
-			reg.Register(providers.NewOpenRouter(pc.BaseURL, key))
-		case providers.ProviderGroq:
-			reg.Register(providers.NewGroq(pc.BaseURL, key))
-		case providers.ProviderNVIDIA:
-			reg.Register(providers.NewNVIDIA(pc.BaseURL, key))
 		case providers.ProviderAnthropic:
 			reg.Register(providers.NewAnthropic(pc.BaseURL, key))
 		default:
@@ -280,6 +300,32 @@ func buildRuntime(log *slog.Logger, app *appEnv) (*handlers.Runtime, error) {
 		Secrets:     sec,
 		GatewayKeys: keys,
 	}, nil
+}
+
+// applyEgressAllowlist は上流接続を設定済みbase_urlのドメインに限定する。
+// 実APIキーがAuthorizationヘッダで送られる先を、意図したプロバイダーだけに絞る。
+func applyEgressAllowlist(log *slog.Logger, cfg *config.Config) error {
+	if envOr("EGRESS_ALLOWLIST", "1") == "0" {
+		log.Warn("上流egress許可リストを無効化しました(EGRESS_ALLOWLIST=0)")
+		_ = providers.SetEgressAllowlist(nil)
+		return nil
+	}
+	hosts := make([]string, 0, len(cfg.Providers))
+	for name, pc := range cfg.Providers {
+		u, err := url.Parse(pc.BaseURL)
+		if err != nil {
+			return fmt.Errorf("provider %q のbase_url解析に失敗(%s): %w", name, pc.BaseURL, err)
+		}
+		if u.Hostname() == "" {
+			return fmt.Errorf("provider %q のbase_urlにホストがありません(%s)", name, pc.BaseURL)
+		}
+		hosts = append(hosts, u.Hostname())
+	}
+	if err := providers.SetEgressAllowlist(hosts); err != nil {
+		return err
+	}
+	log.Info("上流egress許可リストを有効化しました", "hosts", hosts)
+	return nil
 }
 
 // resolveIdentitySource は秘密鍵の取得経路を環境変数から決める。
@@ -347,7 +393,7 @@ func (s identitySource) open() (io.Reader, func(), error) {
 	}
 }
 
-// reportCheck は-gatherなしに検証結果だけを報告して終了する(-checkモード)。
+// reportCheck は検証結果だけを報告して終了する(-checkモード)。
 func reportCheck(log *slog.Logger, rt *handlers.Runtime, app *appEnv) error {
 	ageDays := int64(-1)
 	if info, err := os.Stat(app.secretsFile); err == nil {
@@ -364,7 +410,7 @@ func reportCheck(log *slog.Logger, rt *handlers.Runtime, app *appEnv) error {
 	return nil
 }
 
-// warnSecretsAge はsecretsファイルがローテーション期間を過ぎていたら警告する(運用⑨)。
+// warnSecretsAge はsecretsファイルがローテーション期間を過ぎていたら警告する。
 func warnSecretsAge(log *slog.Logger, path string, maxAgeDays int64) {
 	if maxAgeDays <= 0 {
 		return

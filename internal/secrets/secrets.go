@@ -11,11 +11,13 @@ package secrets
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"filippo.io/age"
 	"filippo.io/age/armor"
@@ -61,9 +63,10 @@ func (s *Secrets) Zero() {
 
 // LoadOptions はsecrets.yaml.ageの復号に必要な入力。
 type LoadOptions struct {
-	EncryptedPath string    // 暗号化secrets(secrets.yaml.age)のパス
-	Identity      io.Reader // 秘密鍵。平文のidentity、または age -p で暗号化されたidentityファイルの内容
-	Passphrase    string    // Identity自体がage暗号化されている場合のパスフレーズ
+	EncryptedPath  string    // 暗号化secrets(secrets.yaml.age)のパス
+	Identity       io.Reader // 秘密鍵。平文のidentity、または age -p で暗号化されたidentityファイルの内容
+	Passphrase     string    // Identity自体がage暗号化されている場合のパスフレーズ
+	DecryptCommand string    // 指定時: 復号を外部コマンド(age CLI等、YubiKeyプラグイン連携可)に委譲。identity/passphraseは不要
 }
 
 // Load は暗号化されたsecretsを復号してSecretsを返す。
@@ -72,50 +75,66 @@ func Load(opts LoadOptions) (*Secrets, error) {
 	if opts.EncryptedPath == "" {
 		return nil, errors.New("暗号化secretsのパスが空です")
 	}
-	if opts.Identity == nil {
-		return nil, errors.New("identityが指定されていません")
-	}
 	// 多層防御③: 暗号化済みファイルでも書き換え可能な状態は拒否する
 	if err := hardening.CheckNotWorldWritable(opts.EncryptedPath); err != nil {
 		return nil, err
 	}
 
-	idData, err := io.ReadAll(io.LimitReader(opts.Identity, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("identityの読み取りに失敗: %w", err)
-	}
-	identities, err := parseIdentities(idData, opts.Passphrase)
-	wipe(idData) // 秘密鍵の生バイトは用が済みしだい消す(ベストエフォート)
-	if err != nil {
-		return nil, err
+	var data []byte
+	var identities []age.Identity
+
+	if opts.DecryptCommand != "" {
+		// 外部コマンド復号バックエンド(age CLI等)。identityはコマンド側で解決される
+		// (YubiKeyプラグインなど、鍵がハードウェアに留まる形にも対応)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		d, err := runCommandOutput(ctx, opts.DecryptCommand)
+		if err != nil {
+			return nil, fmt.Errorf("外部復号コマンドに失敗: %w", err)
+		}
+		data = d
+	} else {
+		if opts.Identity == nil {
+			return nil, errors.New("identityが指定されていません")
+		}
+		idData, err := io.ReadAll(io.LimitReader(opts.Identity, 1<<20))
+		if err != nil {
+			return nil, fmt.Errorf("identityの読み取りに失敗: %w", err)
+		}
+		identities, err = parseIdentities(idData, opts.Passphrase)
+		wipe(idData) // 秘密鍵の生バイトは用が済みしだい消す(ベストエフォート)
+		if err != nil {
+			return nil, err
+		}
+
+		ef, err := os.Open(opts.EncryptedPath)
+		if err != nil {
+			return nil, fmt.Errorf("暗号化secretsを開けません(%s): %w", opts.EncryptedPath, err)
+		}
+		defer ef.Close()
+		efData, err := io.ReadAll(io.LimitReader(ef, 16<<20))
+		if err != nil {
+			return nil, fmt.Errorf("暗号化secretsの読み取りに失敗: %w", err)
+		}
+		// armor形式(age -a)とbinary形式の両方に対応する
+		var src io.Reader = bytes.NewReader(efData)
+		if strings.HasPrefix(strings.TrimSpace(string(efData)), "-----BEGIN AGE ENCRYPTED FILE-----") {
+			src = armor.NewReader(src)
+		}
+		plain, err := age.Decrypt(src, identities...)
+		if err != nil {
+			return nil, fmt.Errorf("age復号に失敗(秘密鍵が一致しない可能性): %w", err)
+		}
+		d, err := io.ReadAll(io.LimitReader(plain, 16<<20))
+		if err != nil {
+			return nil, fmt.Errorf("復号データの読み取りに失敗: %w", err)
+		}
+		wipe(efData) // 暗号化データは読み終えたので消せる(ベストエフォート)
+		data = d
 	}
 
-	ef, err := os.Open(opts.EncryptedPath)
-	if err != nil {
-		return nil, fmt.Errorf("暗号化secretsを開けません(%s): %w", opts.EncryptedPath, err)
-	}
-	defer ef.Close()
-	efData, err := io.ReadAll(io.LimitReader(ef, 16<<20))
-	if err != nil {
-		return nil, fmt.Errorf("暗号化secretsの読み取りに失敗: %w", err)
-	}
-	// armor形式(age -a)とbinary形式の両方に対応する
-	var src io.Reader = bytes.NewReader(efData)
-	if strings.HasPrefix(strings.TrimSpace(string(efData)), "-----BEGIN AGE ENCRYPTED FILE-----") {
-		src = armor.NewReader(src)
-	}
-	plain, err := age.Decrypt(src, identities...)
-	if err != nil {
-		return nil, fmt.Errorf("age復号に失敗(秘密鍵が一致しない可能性): %w", err)
-	}
-
-	data, err := io.ReadAll(io.LimitReader(plain, 16<<20))
-	if err != nil {
-		return nil, fmt.Errorf("復号データの読み取りに失敗: %w", err)
-	}
-	wipe(efData) // 暗号化データは読み終えたので消せる(ベストエフォート)
 	var s Secrets
-	err = yaml.Unmarshal(data, &s)
+	err := yaml.Unmarshal(data, &s)
 	wipe(data) // 平文yamlは解析後すぐに消す(ベストエフォート)
 	if err != nil {
 		return nil, fmt.Errorf("復号後YAMLの解析に失敗: %w", err)

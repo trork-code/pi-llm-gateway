@@ -110,6 +110,9 @@ ExecStart=/usr/local/bin/pi-llm-gateway
 | `AGE_PASSPHRASE` | （任意） | `age -p`で保護したidentityの復号パスフレーズ |
 | `STRICT_KEYS` | （任意） | `1`を指定すると、1つでもapi_keysが欠けているproviderがあったら起動を中止 |
 | `SECRETS_MAX_AGE_DAYS` | `90` | secretsファイルの経過日数がこの値を超えたらローテーションを警告（`0`で無効） |
+| `SECRETS_DECRYPT_CMD` | （任意） | secretsの復号を外部コマンド(age CLI等)に委譲。YubiKey等のageプラグイン鍵に対応 |
+| `EGRESS_ALLOWLIST` | `1` | 上流接続を設定済みbase_urlのドメインに限定（config改ざん時の実キー持ち出し防止）。`0`で無効 |
+| `AUTH_MAX_FAILURES` | `20` | IPごとの認証失敗しきい値。超過で429（ウィンドウ1分）。`0`で無効 |
 | `TLS_CERT` / `TLS_KEY` | （任意） | 指定するとHTTPSで起動 |
 | `MTLS_CA` | （任意） | クライアント証明書検証用CA。指定するとmTLS必須になる |
 

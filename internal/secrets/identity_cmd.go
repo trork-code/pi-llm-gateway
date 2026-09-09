@@ -1,4 +1,4 @@
-// AGE_IDENTITY_CMD(多層防御②)の実装。
+// AGE_IDENTITY_CMD(シークレットマネージャ連携)と共通のコマンド実行ヘルパー。
 // 「秘密鍵はサーバー上にファイルとして常駐させず、シークレットマネージャから
 // 起動の瞬間だけ読み込む」を、ベンダー非依存のコマンド実行で実現する。
 package secrets
@@ -24,9 +24,20 @@ import (
 //
 // 出力はメモリ上でのみ扱い、ログには出さない。失敗時のエラーにも鍵の内容は含めない。
 func IdentityCommand(ctx context.Context, cmdline string) (io.Reader, error) {
+	out, err := runCommandOutput(ctx, cmdline)
+	if err != nil {
+		return nil, fmt.Errorf("AGE_IDENTITY_CMD: %w", err)
+	}
+	return bytes.NewReader(out), nil
+}
+
+// runCommandOutput はcmdlineを実行し、標準出力を返す(共通ヘルパー)。
+// SECRETS_DECRYPT_CMD(YubiKeyプラグイン等のage CLI連携)でも再利用する。
+// 出力はメモリ上でのみ扱い、ログには出さない。失敗時のエラーにも機微内容は含めない。
+func runCommandOutput(ctx context.Context, cmdline string) ([]byte, error) {
 	cmdline = strings.TrimSpace(cmdline)
 	if cmdline == "" {
-		return nil, errors.New("AGE_IDENTITY_CMDが空です")
+		return nil, errors.New("コマンドが空です")
 	}
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
@@ -41,12 +52,15 @@ func IdentityCommand(ctx context.Context, cmdline string) (io.Reader, error) {
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(errOut.String())
 		if msg != "" {
-			return nil, fmt.Errorf("AGE_IDENTITY_CMDの実行に失敗: %w: %s", err, msg)
+			return nil, fmt.Errorf("コマンドの実行に失敗: %w: %s", err, msg)
 		}
-		return nil, fmt.Errorf("AGE_IDENTITY_CMDの実行に失敗: %w", err)
+		return nil, fmt.Errorf("コマンドの実行に失敗: %w", err)
 	}
 	if out.Len() == 0 {
-		return nil, errors.New("AGE_IDENTITY_CMDの出力が空です")
+		return nil, errors.New("コマンドの出力が空です")
 	}
-	return bytes.NewReader(out.Bytes()), nil
+	if out.Len() > 16<<20 {
+		return nil, errors.New("コマンドの出力が大きすぎます")
+	}
+	return out.Bytes(), nil
 }

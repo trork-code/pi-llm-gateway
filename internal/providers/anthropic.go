@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+
+	"github.com/awnumar/memguard"
 )
 
 // AnthropicAdapter はAnthropic Messages API用アダプター。
@@ -13,12 +15,12 @@ import (
 // 実装後はconfig/models.yamlのprovider差し替えだけで切り替わる。
 type AnthropicAdapter struct {
 	BaseURL string
-	APIKey  string
+	key     *memguard.LockedBuffer // 実APIキー(mlock保護)
 	HTTP    *http.Client
 }
 
 func NewAnthropic(baseURL, apiKey string) *AnthropicAdapter {
-	return &AnthropicAdapter{BaseURL: baseURL, APIKey: apiKey, HTTP: &http.Client{}}
+	return &AnthropicAdapter{BaseURL: baseURL, key: sealKey(apiKey), HTTP: guardedHTTPClient()}
 }
 
 func (a *AnthropicAdapter) Name() string { return ProviderAnthropic }

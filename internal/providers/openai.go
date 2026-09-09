@@ -7,15 +7,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/awnumar/memguard"
 )
 
 // OpenAIAdapter はOpenAI互換APIへの素通しアダプター。
 // リクエストはmodel差し替えのみ、レスポンスはそのまま返す。
 // OpenAI互換の他社API(Ollama Cloudなど)にも同じ仕組みを流用できる。
 type OpenAIAdapter struct {
-	name    string // registryキー。OpenAI互換の他プロバイダー(NewOpenAICompat)で差し替える
-	BaseURL string // 例: https://api.openai.com/v1
-	APIKey  string
+	name    string                 // registryキー。OpenAI互換の他プロバイダー(NewOpenAICompat)で差し替える
+	BaseURL string                 // 例: https://api.openai.com/v1
+	key     *memguard.LockedBuffer // 実APIキー(mlock保護・メモリ内暗号化・確実なパージ)
 	HTTP    *http.Client
 }
 
@@ -27,7 +29,7 @@ func NewOpenAI(baseURL, apiKey string) *OpenAIAdapter {
 // NewOpenAICompat はOpenAI互換API(Ollama Cloudなど)向けに、任意のprovider名で
 // 素通しアダプターを作る。
 func NewOpenAICompat(name, baseURL, apiKey string) *OpenAIAdapter {
-	return &OpenAIAdapter{name: name, BaseURL: baseURL, APIKey: apiKey, HTTP: &http.Client{}}
+	return &OpenAIAdapter{name: name, BaseURL: baseURL, key: sealKey(apiKey), HTTP: guardedHTTPClient()}
 }
 
 func (a *OpenAIAdapter) Name() string {
@@ -35,6 +37,23 @@ func (a *OpenAIAdapter) Name() string {
 		return a.name
 	}
 	return ProviderOpenAI
+}
+
+// sealKey は実APIキーをmemguard保護バッファに移す。
+// コピー元の[]byteはwipeされる(元のstringはGC管理に戻るが起動時の一時的なコピーのみ)。
+func sealKey(k string) *memguard.LockedBuffer {
+	b := memguard.NewBufferFromBytes([]byte(k))
+	b.Freeze()
+	return b
+}
+
+// keyString は実APIキーを保護メモリから取り出して文字列として返す。
+// net/httpのヘッダは文字列を要求するため、この瞬間だけ文字列化する(短命なコピー)。
+func (a *OpenAIAdapter) keyString() string {
+	if a.key == nil || !a.key.IsAlive() {
+		return ""
+	}
+	return a.key.String()
 }
 
 // rewriteBody はRawBodyのmodelを実モデル名へ差し替える。
@@ -61,7 +80,7 @@ func (a *OpenAIAdapter) do(ctx context.Context, req *ChatRequest, forceStream bo
 		return nil, err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
-	hreq.Header.Set("Authorization", "Bearer "+a.APIKey)
+	hreq.Header.Set("Authorization", "Bearer "+a.keyString())
 	return a.HTTP.Do(hreq)
 }
 
