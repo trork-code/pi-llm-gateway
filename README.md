@@ -24,7 +24,7 @@ Piから見るとただの「OpenAI互換API」。実際には裏側で本物の
 | provider | 実装 | 備考 |
 |---|---|---|
 | `openai` | ✅ | 素通し（model差し替えのみ） |
-| `ollamacloud` | ✅ | Ollama Cloud (`https://ollama.com/v1`)。OpenAI互換APIとして素通し |
+| `ollamacloud` | ✅ | Ollama Cloud (`https://ollama.com/v1`)。OpenAI互換APIとして素通し。モデル名はollama.comのタグ名必須（例: `gpt-oss:120b`。タグ無し `gpt-oss` は上流404） |
 | `openrouter` | ✅ | OpenRouter (`https://openrouter.ai/api/v1`)。OpenAI互換APIとして素通し。modelは `vendor/model` 形式 |
 | `groq` | ✅ | Groq (`https://api.groq.com/openai/v1`)。OpenAI互換APIとして素通し |
 | `nvidia` | ✅ | NVIDIA NIM (`https://integrate.api.nvidia.com/v1`)。OpenAI互換APIとして素通し。modelは `vendor/model` 形式 |
@@ -61,6 +61,41 @@ pi-llm-gateway/
 1. **鍵を作る** — `age-keygen` で秘密鍵(identity)と公開鍵(recipient)のペアを作る。秘密鍵はリポジトリ外で管理
 2. **暗号化する** — 実キーを書いたyamlを公開鍵で暗号化して `secrets/secrets.yaml.age` にする（このファイルはコミットしてよい）。平文は削除
 3. **起動時に復号する** — gateway起動時に環境変数 `AGE_IDENTITY_FILE` で指定した秘密鍵で復号
+
+## クイックスタート（実機検証済み）
+
+```bash
+# 1. 鍵ペアを作る(age CLIが必要。秘密鍵はリポジトリ外へ)
+age-keygen -o identity.txt
+# 2. 実キーを暗号化(公開鍵は age-keygen -y identity.txt で取得)
+cat > secrets.yaml <<'EOF'
+gateway_key: <任意の合言葉>
+api_keys:
+  ollamacloud: <ollama.comのAPIキー>
+EOF
+age -r "$(age-keygen -y identity.txt)" -o secrets.yaml.age secrets.yaml && rm secrets.yaml
+# 3. 起動
+AGE_IDENTITY_FILE=identity.txt BIND=127.0.0.1 PORT=18080 ./gateway
+# 4. 呼ぶ(クライアントはgatewayキーとモデル別名だけ知っていればよい)
+curl http://127.0.0.1:18080/v1/chat/completions \
+  -H "Authorization: Bearer <gatewayキー>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"pi-ollama","messages":[{"role":"user","content":"こんにちは"}]}'
+```
+
+OpenAI SDKやPi側設定では `base_url: http://127.0.0.1:18080/v1` + `api_key: <gatewayキー>` を指定するだけ。
+
+## ローカル実機E2Eテスト
+
+起動→認証→モデル解決→上流透過→ストリーミング→レート制限→停止までを自動検証する。
+実キーがなくても動作し、`OLLAMA_API_KEY` を渡すと実リクエスト(非stream/stream)まで確認できる。
+
+```bash
+bash scripts/local-e2e.sh                          # ダミーキーで負経路+上流エラー透過を証明
+OLLAMA_API_KEY=<実キー> bash scripts/local-e2e.sh   # 実リクエストも証明(ollamacloud/gpt-oss:120b)
+```
+
+2026-09にこの手順で実機検証済み: 認証(401/200)、未知モデル400、上流401透過、admin/reload、日本語往復(content「テスト成功」)、SSEチャンク配信、総当たり20回から429。
 
 ## APIキー保護（多層防御）の実装状況
 
