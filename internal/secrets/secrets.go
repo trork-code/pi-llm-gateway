@@ -28,11 +28,11 @@ import (
 
 // Secrets は復号後の実キー一式。プロセスメモリ上にのみ存在する。
 type Secrets struct {
-	Version            int               `yaml:"version"`      // 将来のスキーマ変更に備えた管理番号(未対応の値は拒否)
-	GatewayKey         string            `yaml:"gateway_key"`  // 単一キー形式
-	GatewayKeys        []string          `yaml:"gateway_keys"` // 複数キー(将来のキーごとアクセス制御に向けた余地)
-	APIKeys            map[string]string `yaml:"api_keys"`     // provider名 → 実APIキー
-	IdentityRecipients []string          `yaml:"-"`            // 使用中identityの公開鍵(ログ・検証用。非秘匿。Loadが設定する)
+	Version            int               `yaml:"version,omitempty"`      // 将来のスキーマ変更に備えた管理番号(未対応の値は拒否)
+	GatewayKey         string            `yaml:"gateway_key,omitempty"`  // 単一キー形式
+	GatewayKeys        []string          `yaml:"gateway_keys,omitempty"` // 複数キー(将来のキーごとアクセス制御に向けた余地)
+	APIKeys            map[string]string `yaml:"api_keys,omitempty"`     // provider名 → 実APIキー
+	IdentityRecipients []string          `yaml:"-"`                      // 使用中identityの公開鍵(ログ・検証用。非秘匿。Loadが設定する)
 }
 
 // AllGatewayKeys は単一/複数の両形式を吸収して有効なgatewayキー一覧を返す。

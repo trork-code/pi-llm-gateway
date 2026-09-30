@@ -168,6 +168,42 @@ curl -X POST http://127.0.0.1:8080/admin/reload -H "Authorization: Bearer <gatew
 - `AGE_IDENTITY_CMD` 構成なら、再読み込みのたびにシークレットマネージャから最新の鍵を取得する
 - 起動前・再起動後の確認は `gateway -check` で実施できる（復号可否・config・キー欠落・鍵齢を報告）
 
+### 鍵の管理CLI（`gateway keys`）
+
+secrets.yaml.ageを手編集せずに鍵を追加・削除できる管理サブコマンド。
+環境変数はサーバーと共通（`SECRETS_FILE` / `AGE_IDENTITY_FILE` 等）。変更はage再暗号化され**原子的に書き戻される**。
+
+```bash
+# 鍵の棚卸し（値は指紋のみ表示）
+gateway keys list
+
+# gatewayキーを追加（省略時はランダム生成して一度だけ表示）
+gateway keys add              # → gk-xxxxxxxx（安全な場所に保管）
+gateway keys add gk-mytoken   # 手動指定も可
+
+# 稼働中なら変更を即反映（POST /admin/reloadを通知）
+gateway keys add gk-new-key -reload
+
+gateway keys remove 961f      # 完全一致 or ユニーク前方一致で削除
+                              # 最後の1本はロックアウト防止で拒否
+gateway keys set ollamacloud <キー>          # provider上流キーを設定
+echo <キー> | gateway keys set openrouter -  # 標準入力経由も可（履歴に残らない）
+gateway keys unset openrouter               # provider上流キーを削除
+```
+
+フラグ:
+
+| フラグ | 既定 | 説明 |
+|---|---|---|
+| `-reload` | （なし） | 保存後に稼働中gatewayへ `POST /admin/reload` を通知（失敗時は警告のみ） |
+| `-addr URL` | `http://127.0.0.1:18080` | 再読み込み先。env `GATEWAY_RELOAD_ADDR` でも指定可 |
+| `-recipient age1...` | （identity由来） | `SECRETS_DECRYPT_CMD` 使用時の再暗号化先。複数回指定可 |
+
+注意:
+- `SECRETS_DECRYPT_CMD` は復号済み平文しか得られないため、identity系env経由でない場合は `-recipient` が必須
+- フラグはサブコマンドや位置引数の**前後どちら**でも書ける（`keys add gk-x -reload` も可）
+- 鍵の値は履歴に残らない標準入力経由を推奨（`set PROVIDER -`）
+
 ### 定期ローテーション（systemd timer例）
 
 ```ini

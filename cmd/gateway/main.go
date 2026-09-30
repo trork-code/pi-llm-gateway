@@ -50,6 +50,14 @@ import (
 )
 
 func main() {
+	// 鍵管理サブコマンド(サーバーを起動しない): gateway keys list|add|remove|set|unset
+	if len(os.Args) > 1 && os.Args[1] == "keys" {
+		if err := keysCmd(os.Args[2:]); err != nil {
+			slog.Error("keysサブコマンドが失敗しました", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	var check bool
 	flag.BoolVar(&check, "check", false, "configと鍵を検証して終了する(サーバーは起動しない)")
 	flag.Parse()
