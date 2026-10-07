@@ -5,6 +5,18 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 追加 — gateway up / status / down(起動・状態・停止の1コマンド化)
+
+- `gateway up`: 稼働確認(`/healthz`)→未稼働なら**バックグラウンド起動**(子プロセスをデタッチ、Windowsは DETACHED_PROCESS+HideWindow、Unixは Setsid)→READY表示。冪等なのでセッション先頭で何度実行しても安全
+- `gateway status`: URL・uptime・pid・エイリアス→provider割当・鍵数を表示。未起動でもエラーにしない(pi連携向け)
+- `gateway down`: `POST /admin/shutdown`(新エンドポイント、gatewayキー認証)で**安全停止**(稼働中リクエスト完了後に閉じる)。キー解決順: `-key` → env `GATEWAY_KEY` → secrets復号(先頭)
+- サーバー側: `GET /healthz`(認証不要、非秘匿のみ: uptime/pid/default_model/models/providers/gateway_keys/recipients)を追加。authは経路グループ方式に再構成
+- **ポート整合**: keys CLIの `-reload` 通知先と `up/status/down` 接続先は同一規則(`-addr` > env `GATEWAY_ADDR`(旧 `GATEWAY_RELOAD_ADDR`互換) > `http://127.0.0.1:<env PORT|8080>`)。サーバーとCLIの既定ポート不一致を解消
+- 起動バナー: `READY: .../v1` + default_model + エイリアス概要(`aliasSummary`, 上限6で丸める) + ヒント
+- `gateway version`(-v)とルート `-h` にコマンド一覧+例を表示
+- keys opsに反映ヒント(`-reload` 未指定時)と `-quiet`(INFOログ非表示)を追加
+- テスト: healthzハンドラ(JSON形状/ソート)・serviceフラグ解析・resolveGatewayURL(env順序)・up/up済み・down鍵送信・down未起動は非致命など
+
 ### 追加 — gateway keys 管理CLI(鍵の追加・削除・棚卸し)
 
 - `gateway keys list`: 鍵の棚卸し。gatewayキー・provider上流キーの設定状況を、

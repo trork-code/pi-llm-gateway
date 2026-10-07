@@ -13,6 +13,8 @@ Piから見るとただの「OpenAI互換API」。実際には裏側で本物の
 | `POST /v1/chat/completions` | リクエストを上流プロバイダーへ中継。streaming / 非streaming 両対応 |
 | `GET /v1/models` | `config/models.yaml` のエイリアス一覧をOpenAI互換形式で返す |
 | `POST /admin/reload` | 鍵とconfigを再読み込み（gatewayキー認証）。SIGHUPでも可。失敗時は旧状態維持 |
+| `POST /admin/shutdown` | 稼働中リクエスト完了後に安全停止（gatewayキー認証）。`gateway down` が使用 |
+| `GET /healthz` | 認証不要の稼働確認。uptime・モデル構成・鍵数を返す（鍵値は含まない） |
 
 - **認証** — `Authorization: Bearer <gatewayキー>` をチェック。不一致は401
 - **モデル解決** — `model`（例: `pi-default`）を `config/models.yaml` で実プロバイダー/モデルに変換
@@ -135,7 +137,8 @@ ExecStart=/usr/local/bin/pi-llm-gateway
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `PORT` | `8080` | リッスンポート |
+| `PORT` | `8080` | リッスンポート。`gateway status` / `up` / `down` / keys `-reload` の通知先もここから自動決定 |
+| `GATEWAY_ADDR` | （任意） | CLIが自己接続するgatewayのURL（例: `https://gw.example:18080`）。未指定なら `http://127.0.0.1:<PORT>` |
 | `BIND` | `127.0.0.1` | リッスンアドレス。LAN公開時のみ`0.0.0.0`等に変更 |
 | `CONFIG_FILE` | `config/models.yaml` | 非秘匿設定 |
 | `SECRETS_FILE` | `secrets/secrets.yaml.age` | 暗号化secrets |
@@ -196,13 +199,33 @@ gateway keys unset openrouter               # provider上流キーを削除
 | フラグ | 既定 | 説明 |
 |---|---|---|
 | `-reload` | （なし） | 保存後に稼働中gatewayへ `POST /admin/reload` を通知（失敗時は警告のみ） |
-| `-addr URL` | `http://127.0.0.1:18080` | 再読み込み先。env `GATEWAY_RELOAD_ADDR` でも指定可 |
+| `-addr URL` | `http://127.0.0.1:<PORT|8080>` | 再読み込み先。env `GATEWAY_ADDR`（旧 `GATEWAY_RELOAD_ADDR`）でも指定可 |
+| `-quiet` | （なし） | INFOログ非表示（CI・agent連携向け） |
 | `-recipient age1...` | （identity由来） | `SECRETS_DECRYPT_CMD` 使用時の再暗号化先。複数回指定可 |
 
 注意:
 - `SECRETS_DECRYPT_CMD` は復号済み平文しか得られないため、identity系env経由でない場合は `-recipient` が必須
 - フラグはサブコマンドや位置引数の**前後どちら**でも書ける（`keys add gk-x -reload` も可）
 - 鍵の値は履歴に残らない標準入力経由を推奨（`set PROVIDER -`）
+- `-reload` 未指定時は「変更は保存済み。反映には -reload を付けて再実行」とヒントが出る
+
+### 起動・停止・状態（`gateway up` / `status` / `down`）
+
+pi coding agentからの利用を想定した最低手順コマンド。接続先は **PORT envから自動決定**
+（`http://127.0.0.1:<PORT|8080>`）。プロバイダーの切り替えはpiのモデル選択だけで行える
+（`/v1/models` がエイリアス一覧を列挙するため、pi側でモデルを変えるとgatewayが対応providerへ振り分ける）。
+
+```bash
+gateway up        # 稼働していなければバックグラウンド起動→READY表示（冪等。セッション先頭で1回でOK）
+gateway status    # 稼働中: URL・uptime・エイリアス→provider割当・鍵数を表示。未起動でも正常終了
+gateway down      # 稼働中gatewayを安全に停止（稼働中リクエスト完了後）※gatewayキー認証
+```
+
+- `up` の稼働確認・`status` は認証不要の `GET /healthz` を使う（監視ツールからも叩ける）
+- `down` のキー解決順: `-key` → env `GATEWAY_KEY` → secrets復号（identity envがあれば1本目）
+- `up` 起動分のサーバーログは `gateway.log`（`-log PATH` で変更）
+- TLS構成（自己署名含む）では `GATEWAY_ADDR=https://…` を設定しておくと、各CLIがそのURLへ接続
+- Windows起動時に自動で立ち上げたい場合は、`gateway up` をスタートアップに登録（冪等なので毎回走らせて安全）
 
 ### 定期ローテーション（systemd timer例）
 

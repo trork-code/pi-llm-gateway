@@ -112,7 +112,7 @@ func runCmd(t *testing.T, op string, kf *keyFlags, args []string, stdin string) 
 // TestKeysAddGeneratesRandomKey は引数なしaddでランダムキーが生成・保存される。
 func TestKeysAddGeneratesRandomKey(t *testing.T) {
 	keysTestEnv(t, nil)
-	out, err := runCmd(t, "add", &keyFlags{addr: defaultReloadAddr}, nil, "")
+	out, err := runCmd(t, "add", &keyFlags{addr: resolveGatewayURL("")}, nil, "")
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestKeysRemoveAmbiguousPrefix(t *testing.T) {
 // TestKeysSetFromStdin は set の標準入力経路を確認する。
 func TestKeysSetFromStdin(t *testing.T) {
 	keysTestEnv(t, nil)
-	out, err := runCmd(t, "set", &keyFlags{addr: defaultReloadAddr}, []string{"ollamacloud", "-"}, "sk-live-abc\n")
+	out, err := runCmd(t, "set", &keyFlags{addr: resolveGatewayURL("")}, []string{"ollamacloud", "-"}, "sk-live-abc\n")
 	if err != nil {
 		t.Fatalf("set: %v\n出力: %s", err, out)
 	}
@@ -265,7 +265,7 @@ func TestKeysListHidesValues(t *testing.T) {
 // TestFinishKeysOpRequiresRecipients はidentity・-recipient双方なしの変更保存を拒否する(SECRETS_DECRYPT_CMD環境の代替検証)。
 func TestFinishKeysOpRequiresRecipients(t *testing.T) {
 	sec := &secrets.Secrets{Version: 1, GatewayKey: "gk-a"}
-	kf := &keyFlags{addr: defaultReloadAddr}
+	kf := &keyFlags{addr: resolveGatewayURL("")}
 	var out strings.Builder
 	err := finishKeysOp(discardLog(t), sec, filepath.Join(t.TempDir(), "x.age"), kf, &out)
 	if err == nil || !strings.Contains(err.Error(), "recipient") {
@@ -347,8 +347,8 @@ func TestExtractKeyFlagsHelpKeepsDefaultAddr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if kf.addr != defaultReloadAddr {
-		t.Errorf("addr = %q, want %q", kf.addr, defaultReloadAddr)
+	if kf.addr != resolveGatewayURL("") {
+		t.Errorf("addr = %q, want %q", kf.addr, resolveGatewayURL(""))
 	}
 	if !help {
 		t.Error("-h がhelpとして認識されていない")

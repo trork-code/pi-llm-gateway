@@ -62,11 +62,9 @@ func (m *multiFlag) Set(v string) error {
 type keyFlags struct {
 	reload     bool
 	addr       string
+	quiet      bool
 	recipients multiFlag
 }
-
-// defaultReloadAddr はホットリロード通知の既定URL。
-const defaultReloadAddr = "http://127.0.0.1:18080"
 
 var providerNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,40}$`)
 
@@ -105,6 +103,8 @@ func extractKeyFlags(rest []string) (kf *keyFlags, op string, args []string, hel
 			help = true
 		case tok == "-reload" || tok == "--reload":
 			kf.reload = true
+		case tok == "-quiet" || tok == "--quiet":
+			kf.quiet = true
 		case tok == "-addr" || tok == "--addr":
 			if i+1 >= len(rest) {
 				return nil, "", nil, false, fmt.Errorf("-addr の値がありません")
@@ -139,7 +139,8 @@ func extractKeyFlags(rest []string) (kf *keyFlags, op string, args []string, hel
 		args = positional[1:]
 	}
 	if kf.addr == "" {
-		kf.addr = envOr("GATEWAY_RELOAD_ADDR", defaultReloadAddr)
+		// ポート整合: サーバーと同じPORT envから決める(GATEWAY_ADDR/GATEWAY_RELOAD_ADDRで上書き可)
+		kf.addr = resolveGatewayURL("")
 	}
 	return kf, op, args, help, nil
 }
@@ -156,7 +157,8 @@ subcommands:
 
 flags:
   -reload                   保存後に稼働中gatewayへ再読み込み(POST /admin/reload)を通知
-  -addr URL                 再読み込み先(既定 `+defaultReloadAddr+`)
+  -addr URL                 再読み込み先(既定: サーバーと同じ PORT env 例: http://127.0.0.1:18080)
+  -quiet                    INFOログ非表示(CI・agent連携向け)
   -recipient age1...        SECRETS_DECRYPT_CMD使用時の再暗号化先(複数回指定可)
 
 env(サーバーと共通): SECRETS_FILE, AGE_IDENTITY_FILE, AGE_IDENTITY,
@@ -172,30 +174,9 @@ func runKeysOp(log *slog.Logger, op string, kf *keyFlags, args []string, stdin i
 	}
 
 	secretsFile := envOr("SECRETS_FILE", "secrets/secrets.yaml.age")
-	decryptCmd := os.Getenv("SECRETS_DECRYPT_CMD")
-
-	opts := secrets.LoadOptions{
-		EncryptedPath:  secretsFile,
-		Passphrase:     os.Getenv("AGE_PASSPHRASE"),
-		DecryptCommand: decryptCmd,
-	}
-	if decryptCmd == "" {
-		ident, err := resolveIdentitySource(log)
-		if err != nil {
-			return err
-		}
-		idSrc, closeFn, err := ident.open()
-		if err != nil {
-			return err
-		}
-		if closeFn != nil {
-			defer closeFn()
-		}
-		opts.Identity = idSrc
-	}
-	sec, err := secrets.Load(opts)
+	sec, err := loadSecretsForCLI(log) // service_cmd.go の共有ローダー(サーバーと同じenv経路)
 	if err != nil {
-		return fmt.Errorf("secretsの復号に失敗: %w", err)
+		return err
 	}
 	defer sec.Zero()
 

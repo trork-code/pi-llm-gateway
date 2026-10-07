@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -50,21 +51,68 @@ import (
 )
 
 func main() {
-	// 鍵管理サブコマンド(サーバーを起動しない): gateway keys list|add|remove|set|unset
-	if len(os.Args) > 1 && os.Args[1] == "keys" {
-		if err := keysCmd(os.Args[2:]); err != nil {
-			slog.Error("keysサブコマンドが失敗しました", "error", err)
-			os.Exit(1)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "keys":
+			if err := keysCmd(os.Args[2:]); err != nil {
+				slog.Error("keysサブコマンドが失敗しました", "error", err)
+				os.Exit(1)
+			}
+			return
+		case "up":
+			if err := serviceCmd(opUp, os.Args[2:]); err != nil {
+				slog.Error("upが失敗しました", "error", err)
+				os.Exit(1)
+			}
+			return
+		case "status":
+			if err := serviceCmd(opStatus, os.Args[2:]); err != nil {
+				slog.Error("statusが失敗しました", "error", err)
+				os.Exit(1)
+			}
+			return
+		case "down":
+			if err := serviceCmd(opDown, os.Args[2:]); err != nil {
+				slog.Error("downが失敗しました", "error", err)
+				os.Exit(1)
+			}
+			return
+		case "-v", "-version", "--version", "version":
+			fmt.Printf("gateway (pi-llm-gateway) %s\n", appVersion)
+			return
 		}
-		return
 	}
 	var check bool
 	flag.BoolVar(&check, "check", false, "configと鍵を検証して終了する(サーバーは起動しない)")
+	flag.Usage = printMainUsage
 	flag.Parse()
 	if err := run(check); err != nil {
 		slog.Error("gatewayの起動に失敗しました", "error", err)
 		os.Exit(1)
 	}
+}
+
+// appVersion はCHANGELOGのリリースに合わせて更新する。
+const appVersion = "0.1.0"
+
+func printMainUsage() {
+	fmt.Fprint(flag.CommandLine.Output(), `usage: gateway [command] [flags]
+
+commands:
+  (既定)              サーバーを起動(POST /v1/chat/completions, GET /v1/models)
+  -check              起動前にconfigと鍵を検証して終了
+  up                  サーバーを(必要なら)バックグラウンドで起動→READY表示(冪等)
+  status              稼働状態・モデル構成を表示
+  down                サーバーを安全に停止
+  keys list|add|remove|set|unset   secretsの鍵を管理(詳細: gateway keys -h)
+  version             バージョン表示
+
+examples:
+  gateway up && gateway status        起動して状態確認
+  gateway keys add -reload            新しいgatewayキーを追加して即反映
+  curl http://127.0.0.1:18080/healthz 稼働確認(認証不要)
+`)
+	flag.PrintDefaults()
 }
 
 // appEnv は鍵とconfigの読み込みに必要な環境設定。
@@ -143,9 +191,12 @@ func run(check bool) error {
 	r.Use(chimw.RealIP)
 	r.Use(handlers.RequestLogger(log, auditChain))
 	r.Use(chimw.Recoverer)
-	r.Use(auth.MiddlewareConfig(h.GatewayKeys, int(envInt("AUTH_MAX_FAILURES", 20)), time.Minute))
-	r.Post("/v1/chat/completions", h.ChatCompletions)
-	r.Get("/v1/models", h.Models)
+
+	// /healthz は認証不要(稼働・構成の確認のみ。鍵値は含めない)。
+	// `gateway status` / `gateway up` や監視がgatewayキーなしで到達できる。
+	r.Get("/healthz", h.Health)
+
+	var srv *http.Server // /admin/shutdownから参照する(7で初期化)
 
 	// 鍵とconfigの再読み込み(ホットリロード)。失敗時は旧状態を維持する
 	reload := func() error {
@@ -163,13 +214,37 @@ func run(check bool) error {
 			"recipients", nrt.Secrets.IdentityRecipients)
 		return nil
 	}
-	r.Post("/admin/reload", func(w http.ResponseWriter, r *http.Request) {
-		if err := reload(); err != nil {
-			apierr.Write(w, http.StatusInternalServerError, err.Error(), "api_error", "reload_failed")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "reloaded"})
+
+	// 認証必須の経路はグループに集約
+	r.Group(func(authed chi.Router) {
+		authed.Use(auth.MiddlewareConfig(h.GatewayKeys, int(envInt("AUTH_MAX_FAILURES", 20)), time.Minute))
+		authed.Post("/v1/chat/completions", h.ChatCompletions)
+		authed.Get("/v1/models", h.Models)
+
+		authed.Post("/admin/reload", func(w http.ResponseWriter, _ *http.Request) {
+			if err := reload(); err != nil {
+				apierr.Write(w, http.StatusInternalServerError, err.Error(), "api_error", "reload_failed")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "reloaded"})
+		})
+
+		// 安全停止: 稼働中リクエスト完了後に閉じる(graceful shutdown)。
+		// `gateway down` がこの経路を使う。
+		authed.Post("/admin/shutdown", func(w http.ResponseWriter, _ *http.Request) {
+			log.Info("admin/shutdownを受信しました: 稼働中リクエスト完了後に停止します")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "shutting_down"})
+			if srv != nil {
+				go func() {
+					time.Sleep(300 * time.Millisecond) // レスポンス送信の完了を待つ
+					sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					_ = srv.Shutdown(sctx)
+				}()
+			}
+		})
 	})
 
 	// 7. HTTPサーバー起動(TLS/mTLSオプション付き, graceful shutdown付き)
@@ -178,7 +253,7 @@ func run(check bool) error {
 	if tlsCert != "" && tlsKeyFile == "" {
 		return errors.New("TLS_CERT が設定されていますが TLS_KEY が未設定です")
 	}
-	srv := &http.Server{
+	srv = &http.Server{
 		Addr:              net.JoinHostPort(bind, port),
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -211,12 +286,17 @@ func run(check bool) error {
 		}
 	}()
 
-	log.Info("gatewayを起動しました",
-		"addr", srv.Addr,
+	scheme := "http"
+	if tlsCert != "" {
+		scheme = "https"
+	}
+	log.Info("READY: gatewayを起動しました",
+		"url", scheme+"://"+displayHost(bind)+":"+port+"/v1",
 		"tls", tlsCert != "",
 		"default_model", rt.Config.DefaultModel,
-		"models", len(rt.Config.Models),
-		"recipients", rt.Secrets.IdentityRecipients)
+		"models", aliasSummary(rt.Config, 6),
+		"recipients", rt.Secrets.IdentityRecipients,
+		"hint", "pi側でモデルを選択して利用。状態は gateway status で確認")
 	var serveErr error
 	if tlsCert != "" {
 		serveErr = srv.ListenAndServeTLS(tlsCert, tlsKeyFile)
@@ -470,4 +550,31 @@ func envInt(key string, def int64) int64 {
 		}
 	}
 	return def
+}
+
+// displayHost は表示用URLのホストを整える(0.0.0.0や空は127.0.0.1扱い)。
+func displayHost(bind string) string {
+	if bind == "" || bind == "0.0.0.0" || bind == "::" {
+		return "127.0.0.1"
+	}
+	return bind
+}
+
+// aliasSummary はエイリアス一覧を "alias→provider/model" 形式で並べる(上限で丸める)。
+func aliasSummary(cfg *config.Config, limit int) string {
+	type entry struct{ alias, line string }
+	entries := make([]entry, 0, len(cfg.Models))
+	for alias, mc := range cfg.Models {
+		entries = append(entries, entry{alias, alias + "->" + mc.Provider + "/" + mc.Model})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].alias < entries[j].alias })
+	var parts []string
+	for i, e := range entries {
+		if i == limit {
+			parts = append(parts, fmt.Sprintf("+%d", len(entries)-limit))
+			break
+		}
+		parts = append(parts, e.line)
+	}
+	return strings.Join(parts, " | ")
 }

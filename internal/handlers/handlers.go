@@ -34,16 +34,17 @@ type Runtime struct {
 }
 
 type Handlers struct {
-	rt    *atomic.Pointer[Runtime]
-	Audit *audit.Chain
-	Log   *slog.Logger
+	rt      *atomic.Pointer[Runtime]
+	Audit   *audit.Chain
+	Log     *slog.Logger
+	started time.Time // /healthzのuptime表示用
 }
 
 // New は初期Runtimeと監査チェーンでhandler群を作る(auditはnil可でその際はチェーンなし)。
 func New(rt *Runtime, log *slog.Logger, auditChain *audit.Chain) *Handlers {
 	p := new(atomic.Pointer[Runtime])
 	p.Store(rt)
-	return &Handlers{rt: p, Audit: auditChain, Log: log}
+	return &Handlers{rt: p, Audit: auditChain, Log: log, started: time.Now()}
 }
 
 // auditNext は監査エントリをチェーンに追加しIDを返す(チェーン未設定時は空)。
