@@ -227,6 +227,25 @@ gateway down      # 稼働中gatewayを安全に停止（稼働中リクエス�
 - TLS構成（自己署名含む）では `GATEWAY_ADDR=https://…` を設定しておくと、各CLIがそのURLへ接続
 - Windows起動時に自動で立ち上げたい場合は、`gateway up` をスタートアップに登録（冪等なので毎回走らせて安全）
 
+### pi coding agent との接続
+
+pi側は OpenAI互換 provider として宣言する(例: `%USERPROFILE%\.pigent\models.json`):
+
+```json
+"gateway": {
+  "api": "openai-completions",
+  "apiKey": "<gatewayキー>",
+  "baseUrl": "http://127.0.0.1:18080/v1",
+  "models": [ { "id": "pi-ollama-120b", "_launch": true, "reasoning": true,
+                "contextWindow": 131072, "input": ["text"] } ]
+}
+```
+
+- 運用手順: ゲートウェイの常駐dirに `bin/gateway.exe` + `config/models.yaml` + `secrets/` を置き、
+  env(PORT/BIND/CONFIG_FILE/SECRETS_FILE/AGE_IDENTITY_FILE)を設定したランチャで `gateway up`
+- **プロバイダーの切替はpi側の `/model` 選択だけで行える**(`GET /v1/models` がエイリアスを列挙するため)
+- 実装例・詳細はリポジトリ外の運用環境ドキュメントを参照(本リポジトリでは仕様のみ)
+
 ### 定期ローテーション（systemd timer例）
 
 ```ini
