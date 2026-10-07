@@ -1,0 +1,15 @@
+@echo off
+rem pi-gateway 常駐ランチャ(冪等)。ログイン時起動(HKCU Run)でも手動でも使える。
+rem このファイルを runtime-dir 直下に up.cmd として配置する。
+rem セキュリティ: 秘値は一切書かない(identity/apiキーはsecrets配下とenv経由)
+setlocal
+set BASE=%~dp0
+set PORT=18080
+set BIND=127.0.0.1
+set CONFIG_FILE=%BASE%config\models.yaml
+set SECRETS_FILE=%BASE%secrets\secrets.yaml.age
+set AGE_IDENTITY_FILE=%BASE%secrets\identity.txt
+cd /d "%BASE%"
+"%BASE%bin\gateway.exe" up -log "%BASE%gateway.log"
+"%BASE%bin\gateway.exe" status -addr http://127.0.0.1:%PORT%
+endlocal

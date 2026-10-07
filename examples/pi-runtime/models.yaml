@@ -1,0 +1,29 @@
+# pi coding agent 接続用のモデル構成の例。
+# 左側のエイリアスが pi側(/model)から選べる id として列挙される(GET /v1/models)。
+# 実キーは secrets/secrets.yaml.age の api_keys で管理(このファイルには書かない)。
+default_model: pi-ollama-120b
+
+providers:
+  ollamacloud:
+    base_url: https://ollama.com/v1
+  # 追加プロバイダー例(実キー登録後にコメントを外す)
+  # openai:
+  #   base_url: https://api.openai.com/v1
+  # openrouter:
+  #   base_url: https://openrouter.ai/api/v1
+  # groq:
+  #   base_url: https://api.groq.com/openai/v1
+  # nvidia:
+  #   base_url: https://integrate.api.nvidia.com/v1
+
+models:
+  pi-ollama-120b:
+    provider: ollamacloud
+    model: gpt-oss:120b
+  pi-ollama:
+    provider: ollamacloud
+    model: gpt-oss
+  # 検証用: 有料モデルと同一モデルのgateway経路
+  pi-glm:
+    provider: ollamacloud
+    model: glm-5.3-flash:cloud
