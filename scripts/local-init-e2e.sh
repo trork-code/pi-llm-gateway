@@ -47,7 +47,15 @@ command -v curl >/dev/null 2>&1 || { log "ERROR: curl が見つかりません";
 "$GO" build -o "$WORK/gateway" ./cmd/gateway
 
 GW="$WORK/gateway"
-port=18099
+# 動的ポート: 残留サーバー等との衝突を避ける(18100-18140の空きポート)
+port=""
+for p in $(seq 18100 18140); do
+  if ! curl -s --max-time 1 -o /dev/null "http://127.0.0.1:$p/healthz" 2>/dev/null; then
+    port=$p; break
+  fi
+done
+[ -n "$port" ] || { log "ERROR: 空きポートが見つかりません(18100-18140)"; exit 1; }
+log "test port: $port"
 base="http://127.0.0.1:$port"
 
 log "=== 1. 非対話 init ==="
