@@ -21,6 +21,7 @@ type Provider struct {
 	Input     []string
 	Reasoning bool
 	Disabled  bool // anthropic 等、未実装のため選択肢に出さない
+	WeakProbe bool // /v1/models がキー無しなど2xxを返すprovider(鍵検証が弱い旨を表示)
 }
 
 // Catalog は対応プロバイダー一覧(§3 表)。順序は提示順で固定。
@@ -29,7 +30,8 @@ func Catalog() []Provider {
 		{ID: "ollamacloud", Title: "Ollama Cloud (ollama.com)", BaseURL: "https://ollama.com/v1",
 			EnvVar: "OLLAMA_API_KEY", Suggest: "gpt-oss:120b",
 			Note: "ollama.com models require a tag (e.g. gpt-oss:120b); bare names fail upstream.",
-			CW:   131072, Input: []string{"text"}, Reasoning: true},
+			CW:   131072, Input: []string{"text"}, Reasoning: true,
+			WeakProbe: true},
 		{ID: "openai", Title: "OpenAI", BaseURL: "https://api.openai.com/v1",
 			EnvVar: "OPENAI_API_KEY", Suggest: "gpt-4.1-mini",
 			CW: 128000, Input: []string{"text", "image"}, Reasoning: true},

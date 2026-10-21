@@ -483,6 +483,9 @@ func verifyUpstream(prov Provider, apiKey string, stdout io.Writer, quiet bool) 
 	case err != nil:
 		fmt.Fprintf(stdout, "key check skipped (%v) — you can adjust later with `gateway keys set %s <KEY>`.\n", err, prov.ID)
 		return "skipped(" + err.Error() + ")"
+	case ok && prov.WeakProbe:
+		fmt.Fprintf(stdout, "key check: endpoint reachable. NOTE: %s /v1/models answers without the key, so the key itself was not verified.\n", prov.ID)
+		return "reachable (key not verified: weak endpoint)"
 	case ok:
 		fmt.Fprintf(stdout, "key check: OK (%s accepted the key)\n", prov.ID)
 		return "ok"

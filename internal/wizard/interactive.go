@@ -48,7 +48,7 @@ func RunInteractive(app Options, stdin io.Reader, stdout io.Writer) (*Summary, b
 	app.Model, app.Alias = model, alias
 
 	// [4/5] pi登録
-	if !askYes(in, stdout, fmt.Sprintf("Register the `gateway` provider in pi (%s)?", piModelsPath()), true) {
+	if !askYes(in, stdout, fmt.Sprintf("[4/5] Register the `gateway` provider in pi (%s)?", piModelsPath()), true) {
 		app.Pi = false
 	} else {
 		app.Pi = true
@@ -78,10 +78,6 @@ func PrintSummary(sum *Summary, w io.Writer) {
 	fmt.Fprintf(w, "Setup complete.\n  runtime dir : %s\n  provider    : %s (gateway key fp %s, encrypted)\n  alias       : %s → %s\n",
 		sum.RuntimeDir, sum.Provider, sum.GatewayKeyFP, sum.Alias, sum.Model)
 	fmt.Fprintf(w, "  base url    : %s\n", sum.BaseURL)
-	note := modelNote(sum.Alias, sum.Model)
-	if note != "" {
-		fmt.Fprintf(w, "    %s\n", note)
-	}
 	if sum.PiRegistered {
 		fmt.Fprintf(w, "  pi          : registered (%d alias models written to models.json)\n", sum.PiModels)
 	} else {
@@ -91,10 +87,6 @@ func PrintSummary(sum *Summary, w io.Writer) {
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Gateway starts with: run the launcher, or `gateway up`.")
 	fmt.Fprintln(w, "In pi: /model -> your alias.  If pi was already open, restart pi to pick up the new provider.")
-}
-
-func modelNote(alias, model string) string {
-	return fmt.Sprintf("%s -> %s", alias, model)
 }
 
 // --- 設問ヘルパ ------------------------------------------------------------
