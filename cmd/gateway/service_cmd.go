@@ -197,7 +197,8 @@ func serviceUp(log *slog.Logger, url, logPath string, stdout io.Writer) error {
 		return fmt.Errorf("ログファイルを開けません(%s): %w", logPath, err)
 	}
 	defer f.Close()
-	cmd := exec.Command(exe)
+	// 裸はinit/メニューに変わった設計(§1.1)のため、spawn先は隠し serve を明示する
+	cmd := exec.Command(exe, "serve")
 	cmd.Stdout = f
 	cmd.Stderr = f
 	detachSysProcAttr(cmd)

@@ -64,7 +64,30 @@ pi-llm-gateway/
 2. **暗号化する** — 実キーを書いたyamlを公開鍵で暗号化して `secrets/secrets.yaml.age` にする（このファイルはコミットしてよい）。平文は削除
 3. **起動時に復号する** — gateway起動時に環境変数 `AGE_IDENTITY_FILE` で指定した秘密鍵で復号
 
-## クイックスタート（実機検証済み）
+## クイックスタート(配布向け)
+
+初めて使う場合は **`gateway` を引数なしで実行**するだけ。ウィザードが全て整えます
+(`gateway init` も同じ。詳しい設計は [docs/design-distribution.md](docs/design-distribution.md)):
+
+```bash
+gateway        # ウィザード: provider選択 → APIキー → エイリアス → pi登録 → 起動方式
+               # → ~/.pi-gateway に config/secrets/identity/launcher/bin を一式生成
+               # → pi側 models.json に gateway プロバイダーを追加(バックアップ付き)
+
+# pi側で /model → エイリアスを選ぶだけ(プロバイダー切替はmodels.yamlの編集でも可)
+```
+
+非対話(CI・インストーラ組み込み):
+
+```bash
+gateway init --provider ollamacloud --api-key env:OLLAMA_API_KEY \
+  --model gpt-oss:120b --alias pi-default --yes --print-json
+```
+
+再実行はメニュー(プロバイダー追加/キー差し替え/pi再登録)。`pi models.json` は
+`providers.gateway` ブロックのみを所有し、タイムスタンプ付きバックアップを3世代残す。
+
+## 手動セットアップ(上級・実機検証済み手順)
 
 ```bash
 # 1. 鍵ペアを作る(age CLIが必要。秘密鍵はリポジトリ外へ)
@@ -153,6 +176,8 @@ ExecStart=/usr/local/bin/pi-llm-gateway
 | `AUTH_MAX_FAILURES` | `20` | IPごとの認証失敗しきい値。超過で429（ウィンドウ1分）。`0`で無効 |
 | `TLS_CERT` / `TLS_KEY` | （任意） | 指定するとHTTPSで起動 |
 | `MTLS_CA` | （任意） | クライアント証明書検証用CA。指定するとmTLS必須になる |
+| `GATEWAY_SERVE` | （任意） | `1`を指定すると裸`gateway`が旧挙動(フォアグラウンド起動)になる。裸は`gateway init`相当に変更済み(配布ウィザード)。隠し`serve`サブコマンドの等価env |
+| `GATEWAY_RUNTIME_DIR` | （任意） | 配布ウィザードのruntime dir配置先(~/.pi-gateway)。`--runtime-dir`フラグと同等 |
 
 ### 鍵の再読み込み（ホットリロード）
 
@@ -276,7 +301,23 @@ CI（.github/workflows/ci.yml）が gofmt / go vet / go build / go test を検�
 - [x] gatewayキー認証（auth）
 - [x] streaming対応（sse — OpenAI素通し）
 - [x] Anthropicアダプターのスタブ（現在は501を返す）
-- [ ] Anthropicアダプター実装（OpenAI⇄Anthropic変換。models.yaml書き換えだけで切り替わるところまで）
+- [ ] Anthropicアダプター実装（OpenAI⇄Anthropic変換。models.yaml書き換えだけで切り替えられるところまで）
 - [ ] 平文 `.env` キーを `secrets.yaml.age` に置き換え
+- [x] 配布ウィザード `gateway init`（対話/非対話/メニュー・pi models.jsonマージ・ランチャ生成。検収: `scripts/local-init-e2e.sh`）
+- [ ] doctor / models / secrets rotate のCLI化（バッチ2）
+- [ ] ログイン常駐(3OS) + ドーマントモード + goreleaser（バッチ3）
+
+## 隠しサブコマンド（内部口・CI/スクリプト用）
+
+公開面は `gateway` / `gateway init` / `-v` のみ。以下はヘルプに非表示の内部口として維持
+(up/cmd・E2E・CIの契約面。design-distribution.md §11):
+
+| コマンド | 用途 |
+|---|---|
+| `serve` | 旧・裸`gateway`相当のフォアグラウンド起動(ランチャspawn先) |
+| `up` / `status` / `down` | 冪等起動/状態/安全停止 |
+| `keys list\|add\|remove\|set\|unset` | secrets管理CLI |
+| `pi install` / `pi uninstall` | pi models.json へのgatewayプロバイダー登録/解除 |
+| `-check` | 起動前のconfig・鍵検証 |
 
 詳細な設計は [pi-llm-gateway-spec-go.md](pi-llm-gateway-spec-go.md) を参照。

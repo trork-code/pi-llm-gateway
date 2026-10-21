@@ -99,7 +99,7 @@ EOF
 log "gateway起動中... (port=$PORT)"
 AGE_IDENTITY_FILE="$WORK/identity.txt" CONFIG_FILE="$WORK/config.yaml" \
   SECRETS_FILE="$WORK/secrets.yaml.age" BIND=127.0.0.1 PORT="$PORT" AUTH_MAX_FAILURES=20 \
-  "$WORK/gateway" >"$WORK/gateway.log" 2>&1 &
+  "$WORK/gateway" serve >"$WORK/gateway.log" 2>&1 &
 GW_PID=$!
 
 UP="no"

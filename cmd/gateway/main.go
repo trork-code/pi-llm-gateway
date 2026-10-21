@@ -48,18 +48,32 @@ import (
 	"github.com/trork-code/pi-llm-gateway/internal/hardening"
 	"github.com/trork-code/pi-llm-gateway/internal/providers"
 	"github.com/trork-code/pi-llm-gateway/internal/secrets"
+	"github.com/trork-code/pi-llm-gateway/internal/setup"
 )
 
 func main() {
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
+		arg1 := os.Args[1]
+		switch arg1 {
+		case "init", "serve", "pi":
+			if err := routeNew(arg1, os.Args[2:]); err != nil {
+				slog.Error("失敗しました", "error", err)
+				os.Exit(1)
+			}
+			return
 		case "keys":
+			if guardHiddenCmd() {
+				os.Exit(2)
+			}
 			if err := keysCmd(os.Args[2:]); err != nil {
 				slog.Error("keysサブコマンドが失敗しました", "error", err)
 				os.Exit(1)
 			}
 			return
 		case "up":
+			if guardHiddenCmd() {
+				os.Exit(2)
+			}
 			if err := serviceCmd(opUp, os.Args[2:]); err != nil {
 				slog.Error("upが失敗しました", "error", err)
 				os.Exit(1)
@@ -81,36 +95,107 @@ func main() {
 			fmt.Printf("gateway (pi-llm-gateway) %s\n", appVersion)
 			return
 		}
+		if strings.HasPrefix(arg1, "-") {
+			// 旧来の裸フラグ経路: -check(検証のみ)、および init系フラグ(--provider等)の省略形
+			var check bool
+			flag.Usage = printMainUsage
+			flag.BoolVar(&check, "check", false, "configと鍵を検証して終了する(サーバーは起動しない)")
+			flag.Parse()
+			if check {
+				if err := run(true); err != nil {
+					slog.Error("検証に失敗しました", "error", err)
+					os.Exit(1)
+				}
+				return
+			}
+			if flag.NArg() == 0 && isInitFlag(os.Args[1:]) {
+				// 裸+initフラグ(--provider ollamacloud --api-key env:X --yes 等)は init の省略形
+				if err := initCmd(os.Args[1:], os.Stdout); err != nil {
+					slog.Error("initが失敗しました", "error", err)
+					os.Exit(1)
+				}
+				return
+			}
+			printMainUsage()
+			os.Exit(2)
+		}
+		fmt.Fprintf(os.Stderr, "unknown command %q — run `gateway` (no arguments) for setup, or `gateway -h`\n", arg1)
+		os.Exit(2)
 	}
-	var check bool
-	flag.BoolVar(&check, "check", false, "configと鍵を検証して終了する(サーバーは起動しない)")
-	flag.Usage = printMainUsage
-	flag.Parse()
-	if err := run(check); err != nil {
-		slog.Error("gatewayの起動に失敗しました", "error", err)
+
+	// 裸 gateway:
+	//  - GATEWAY_SERVE=1 … 旧挙動(フォアグラウンド起動)のレガシー救済
+	//  - 通常 … init/メニュー(設計§1: 公開CLIの顔は init 1つ)
+	if os.Getenv("GATEWAY_SERVE") == "1" {
+		if err := run(false); err != nil {
+			slog.Error("gatewayの起動に失敗しました", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if err := initCmd(nil, os.Stdout); err != nil {
+		slog.Error("initが失敗しました", "error", err)
 		os.Exit(1)
 	}
 }
 
+// routeNew は init / serve / pi サ ブコマンドの振り分け。
+func routeNew(cmd string, rest []string) error {
+	switch cmd {
+	case "init":
+		return initCmd(rest, os.Stdout)
+	case "serve":
+		// 旧・裸gateway相当のフォアグラウンド起動(隠し口)
+		defer memguard.Purge()
+		return run(false)
+	case "pi":
+		return piCmd(rest, os.Stdout)
+	}
+	return fmt.Errorf("unknown route %q", cmd)
+}
+
+// isInitFlag は裸フラグ列が init の省略形かを判定する。
+// 非initフラグ(-check/-v以外の未知フラグ)は従来通りエラーに落とす。
+func isInitFlag(args []string) bool {
+	for _, tok := range args {
+		tok = strings.TrimPrefix(strings.TrimPrefix(tok, "-"), "-")
+		if i := strings.Index(tok, "="); i > 0 {
+			tok = tok[:i]
+		}
+		switch tok {
+		case "provider", "api-key", "model", "alias", "pi", "no-pi", "startup",
+			"port", "bind", "runtime-dir", "yes", "y", "print-json", "quiet",
+			"force", "pi-key-replace", "no-start", "h", "help":
+			return true
+		}
+	}
+	return false
+}
+
+// guardHiddenCmd は導線③: 未セットアップ環境で隠しサブコマンド(up/keys)を実行した
+// 場合に案内して非ゼロ終了する。明示env(CONFIG_FILE/SECRETS_FILE)や
+// 既定パスの揃った環境(開発リポジトリ・ 既存デプロイ・E2E)では false(そのまま実行)。
+func guardHiddenCmd() bool {
+	if setup.Guard() {
+		fmt.Fprintln(os.Stderr, setup.GuardMessage)
+		return true
+	}
+	return false
+}
+
 // appVersion はCHANGELOGのリリースに合わせて更新する。
-const appVersion = "0.1.0"
+const appVersion = "0.2.0"
 
 func printMainUsage() {
-	fmt.Fprint(flag.CommandLine.Output(), `usage: gateway [command] [flags]
+	fmt.Fprint(flag.CommandLine.Output(), `usage: gateway [init] | -v
 
-commands:
-  (既定)              サーバーを起動(POST /v1/chat/completions, GET /v1/models)
-  -check              起動前にconfigと鍵を検証して終了
-  up                  サーバーを(必要なら)バックグラウンドで起動→READY表示(冪等)
-  status              稼働状態・モデル構成を表示
-  down                サーバーを安全に停止
-  keys list|add|remove|set|unset   secretsの鍵を管理(詳細: gateway keys -h)
-  version             バージョン表示
+  (no args)    first run: start the setup wizard
+               afterwards: management menu
+  init         same as bare gateway (flags available, see `+"`gateway init -h`"+`)
+  -v           version
 
-examples:
-  gateway up && gateway status        起動して状態確認
-  gateway keys add -reload            新しいgatewayキーを追加して即反映
-  curl http://127.0.0.1:18080/healthz 稼働確認(認証不要)
+Try `+"`gateway`"+` to get started. pi: /model to pick your alias.
+(Advanced/hidden commands exist for CI and scripting; they are undocumented on purpose.)
 `)
 	flag.PrintDefaults()
 }
