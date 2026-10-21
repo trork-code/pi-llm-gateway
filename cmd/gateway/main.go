@@ -96,7 +96,16 @@ func main() {
 			return
 		}
 		if strings.HasPrefix(arg1, "-") {
-			// 旧来の裸フラグ経路: -check(検証のみ)、および init系フラグ(--provider等)の省略形
+			// init系フラグ(--provider/--port/--yes等)は先に判定してinitCmdへ。
+			// flag.Parseは未定義フラグで即exitするため、判定前に通さないと裸省略形が動かない
+			if isInitFlag(os.Args[1:]) {
+				if err := initCmd(os.Args[1:], os.Stdout); err != nil {
+					slog.Error("initが失敗しました", "error", err)
+					os.Exit(1)
+				}
+				return
+			}
+			// 旧来の裸フラグ経路: -check(検証のみ)
 			var check bool
 			flag.Usage = printMainUsage
 			flag.BoolVar(&check, "check", false, "configと鍵を検証して終了する(サーバーは起動しない)")
@@ -104,14 +113,6 @@ func main() {
 			if check {
 				if err := run(true); err != nil {
 					slog.Error("検証に失敗しました", "error", err)
-					os.Exit(1)
-				}
-				return
-			}
-			if flag.NArg() == 0 && isInitFlag(os.Args[1:]) {
-				// 裸+initフラグ(--provider ollamacloud --api-key env:X --yes 等)は init の省略形
-				if err := initCmd(os.Args[1:], os.Stdout); err != nil {
-					slog.Error("initが失敗しました", "error", err)
 					os.Exit(1)
 				}
 				return

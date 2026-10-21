@@ -35,3 +35,25 @@ func TestEnvVarsDocumented(t *testing.T) {
 		}
 	}
 }
+
+// TestIsInitFlag は裸フラグ省略形の振り分け規則。
+func TestIsInitFlag(t *testing.T) {
+	if !isInitFlag([]string{"--port", "18099"}) {
+		t.Fatal("--port は init 省略形")
+	}
+	if !isInitFlag([]string{"-provider", "x", "--api-key", "env:Y", "-y"}) {
+		t.Fatal("provider/api-key/y は init 省略形")
+	}
+	if !isInitFlag([]string{"--print-json", "--no-start"}) {
+		t.Fatal("print-json/no-start は init 省略形")
+	}
+	if isInitFlag([]string{"-check"}) {
+		t.Fatal("-check は既存経路(checkモード)に残す")
+	}
+	if isInitFlag([]string{"-v"}) {
+		t.Fatal("-v はversionケースで処理済み")
+	}
+	if isInitFlag([]string{"-unknown-flag"}) {
+		t.Fatal("未知フラグはinit省略形とみなさない")
+	}
+}
