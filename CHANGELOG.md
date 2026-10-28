@@ -5,6 +5,15 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 修正 — ウィザードで選択可能な nvidia / groq / openrouter がサーバー起動時に必ず失敗する問題
+
+- `cmd/gateway` のregistry構築 switch に `openrouter` / `groq` / `nvidia` の配線が漏れており、
+  ウィザードで該当providerを選ぶとconfig生成は成功するが実際の起動は常に
+  「未知のprovider \"nvidia\" がconfigにあります」で失敗していた(adapter自体は 2026-09-09 に実装済み)
+- `providers.NewOpenRouter / NewGroq / NewNVIDIA` をbuildRuntimeに接続し、ウィザードcatalogと
+  ランタイムの一貫性を検証するテスト(`TestBuildRuntimeRegistersAllCatalogProviders`)を追加:
+  カタログの全enabled providerがregistryへ接続されること+未知providerは従来通りfail-closed の2段構え
+
 ### 追加 — gateway up / status / down(起動・状態・停止の1コマンド化)
 
 - `gateway up`: 稼働確認(`/healthz`)→未稼働なら**バックグラウンド起動**(子プロセスをデタッチ、Windowsは DETACHED_PROCESS+HideWindow、Unixは Setsid)→READY表示。冪等なのでセッション先頭で何度実行しても安全
