@@ -319,5 +319,42 @@ CI（.github/workflows/ci.yml）が gofmt / go vet / go build / go test を検�
 | `keys list\|add\|remove\|set\|unset` | secrets管理CLI |
 | `pi install` / `pi uninstall` | pi models.json へのgatewayプロバイダー登録/解除 |
 | `-check` | 起動前のconfig・鍵検証 |
+| `doctor` | 環境診断(10項目)。`[ok]/[warn]/[fail]`行+fix提案、fail>0でexit 1 |
+| `models` | config/models.yaml 基準のエイリアス表表示(`*`=default) |
+| `secrets rotate` | secrets.yaml.ageの再暗号化(旧: scripts/rotate-secrets.sh、Windows対応) |
+
+### `gateway doctor` — 環境診断(10項目)
+
+```
+gateway doctor          # 環境の整合性を診断し、末尾にfix提案を出す
+```
+
+検査項目: runtime dir/setup.json・models.yaml整合・secrets復可+鍵齢(SECRETS_MAX_AGE_DAYS,
+既定90日)・pi gatewayキー一致・pi alias乖離・稼働状態(coldは正常)・autostart・ポート競合/BIND・
+runtime binaryとCLIの版差(アップデート忘れ検知)・Windows console codepage。
+
+`[ok]/[warn]/[fail]/[skip]`行+末尾fix提案(該当メニュー番号 or フラグ)。**exit code は
+fail>0 → 1、warn>0 → 0** のためスクリプトの健全性判定に使える。setup.jsonが無い手動構成
+(wizard以前の環境)はランチャのPORT/BINDも読むため、現行の常駐環境は正しく診断される。
+
+### `gateway secrets rotate` — 再暗号化(鍵齢リフレッシュ/recipient付け替え)
+
+```
+gateway secrets rotate                    # 現行identityのrecipientへ再暗号化(検証付き)
+gateway secrets rotate age1xxxx age1yyyy  # recipient付け替え(複数可)
+gateway secrets rotate --skip-verify age1xxxx   # identity自体をローテーションする時のみ
+```
+
+置き換え前に `.bak` に退避し、保存後に復号ラウンドトリップ検証。失敗したら旧ファイルに復元する
+(fail-closed)。`SECRETS_DECRYPT_CMD` 経路(identity recipientsが取れない環境)では recipient 必須。
+鍵値の変更は `gateway keys set/unset` が担い、rotateはファイルの包み直し(鍵齢リフレッシュ)。
+
+### `gateway models` — エイリアス表
+
+```
+gateway models    # config/models.yaml 基準。DEFAULT列が*のエイリアスがpiの既定
+```
+
+pi側(`/model`)に列挙される id と同じものを、config側の現状として表示する。
 
 詳細な設計は [pi-llm-gateway-spec-go.md](pi-llm-gateway-spec-go.md) を参照。

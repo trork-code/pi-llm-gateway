@@ -5,6 +5,30 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 追加 — doctor / models / secrets rotate(第2バッチ: 診断と保守のCLI化)
+
+- `gateway doctor`: セットアップ環境の整合性診断10項目(design-distribution.md §10)。runtime dir/setup.json・
+  models.yaml整合(alias→provider参照・既定モデル)・secrets復可+鍵齢(`SECRETS_MAX_AGE_DAYS`, 既定90日)・
+  gatewayキー↔pi models.jsonapiKey 一致(定数時間比較)・pi alias乖離・稼働状態(`/healthz`; **coldは正常扱い**)・
+  autostart(HKCU Run実体検査)・ポート競合/BIND(0.0.0.0警告)・runtime binaryとCLIの版差(アップデート忘れ検知)・
+  Windows console codepage。出力は `[ok]/[warn]/[fail]/[skip]` 行+末尾fix提案、**exit code は fail>0 → 1,
+  warn>0 → 0**。メニュー「6) Diagnose」と同一コア(`ops.Doctor`)
+- setup.json無しのmanual構成(wizard移行前の環境)はランチャ(up.cmd/up.sh)から PORT/BIND を解析する
+  フォールバックを追加 — 既存の常駐環境でもdoctorが正しいポートで診断できる
+- `gateway models`: config/models.yaml 基準のエイリアス表表示(defaultに*印。piの`/model`と同じid列挙)
+- `gateway secrets rotate`: scripts/rotate-secrets.sh のGo化(Windows対応)。recipient付け替え/鍵齢
+  リフレッシュ。旧ファイルを `.bak` 退避+保存後に復号ラウンドトリップ検証、失敗時は旧ファイルへ復元
+  (fail-closed)。`SECRETS_DECRYPT_CMD` 経路では recipient 必須。`--skip-verify` はidentity自体の
+  ローテーション時のみ(bash版と同一契約)。メニュー「7) secretsローテーション」と同一コア(`ops.RotateSecrets`)
+- `internal/ops` に `Doctor / RotateSecrets / ListAliases / PrintModelsTable` を追加
+  (`golang.org/x/sys` を direct 依存に昇格: codepage/HKCU Run 検査用)
+
+### 修正 — Guard が任意のCWDからの隠しコマンドを誤って拒否
+
+- `setup.Guard()` は runtime dir が完全(config+secrets揃い=セットアップ済み扱い)でも、カレントに
+  同じ構成があることを要求していたため、ランチャ(=runtime dir cd)以外の場所から `doctor` 等を実行すると
+  「未セットアップ」で誤って拒否された。runtime dir 完全時は CWD 要件を外す(未セットアップ判定は維持)
+
 ### 修正 — ウィザードで選択可能な nvidia / groq / openrouter がサーバー起動時に必ず失敗する問題
 
 - `cmd/gateway` のregistry構築 switch に `openrouter` / `groq` / `nvidia` の配線が漏れており、

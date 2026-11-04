@@ -258,8 +258,12 @@ func Guard() bool {
 	if _, err := os.Stat(paths.SetupJSON); err == nil {
 		return false
 	}
-	if !IsComplete(paths, nil) {
-		return true
+	// runtime dirが完全(config+secrets揃い)ならセットアップ済み扱い。
+	// 任意のCWDから隠しコマンド(doctor等)を許す(2026-10-30修正: 旧実装は
+	// CWDにも同じ構成を要求していて、ランチャ以外の場所からdoctor等が
+	// 空でない環境で誤って拒否された)
+	if IsComplete(paths, nil) {
+		return false
 	}
 	// カレントの既定パス(開発リポジトリ等)にも環境があれば隠しコマンドを許す
 	_, errC := os.Stat("config/models.yaml")

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"strconv"
+
 	"filippo.io/age"
 
 	"github.com/trork-code/pi-llm-gateway/internal/ops"
@@ -257,6 +259,7 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "  1) Add a provider\n")
 		fmt.Fprintf(stdout, "  2) Replace a provider API key\n")
 		fmt.Fprintf(stdout, "  4) Register pi (models.json) again\n")
+		fmt.Fprintf(stdout, "  6) Run diagnostics (doctor)\n")
 		fmt.Fprintf(stdout, "  q) Quit\n")
 		if !sum.Empty {
 			fmt.Fprintf(stdout, "  current: %s / providers=%v / default=%s / running=%s\n",
@@ -286,10 +289,14 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 			if err := menuPiRegister(paths, stdout); err != nil {
 				fmt.Fprintf(stdout, "error: %v\n", err)
 			}
+		case "6":
+			if err := menuDoctor(paths, stdout); err != nil {
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			}
 		case "", "q", "quit", "exit":
 			return nil
 		default:
-			fmt.Fprintln(stdout, "  unknown choice (1 / 2 / 4 / q)")
+			fmt.Fprintln(stdout, "  unknown choice (1 / 2 / 4 / 6 / q)")
 		}
 	}
 }
@@ -297,6 +304,27 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 // MenuRuntime はメニュー/隠しCLIが前提とする環境(runtime paths + secrets + recipient)を公開版で。
 // MenuRuntime は runtimeFromEnv のエクスポート版(cmd層の隠しCLIからも使う)。
 func MenuRuntime() (setup.Paths, *secrets.Secrets, string, error) { return runtimeFromEnv() }
+
+// menuDoctor はメニュー「6) Diagnose」。隠しCLI doctor と同一コア(ops.Doctor)。
+// CLIVersion はわからないため版差比較はせず(bin単体の版表示のみ)。
+func menuDoctor(paths setup.Paths, out io.Writer) error {
+	maxAge := int64(90)
+	if v := os.Getenv("SECRETS_MAX_AGE_DAYS"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			maxAge = int64(n)
+		}
+	}
+	_, err := ops.Doctor(ops.DoctorOptions{
+		Dir:        paths.Dir,
+		MaxAgeDays: maxAge,
+		LoadSecrets: func() (*secrets.Secrets, error) {
+			sec, _, err := secretsForPaths(paths)
+			return sec, err
+		},
+		Stdout: out,
+	})
+	return err
+}
 
 func runtimeFromEnv() (setup.Paths, *secrets.Secrets, string, error) {
 	dir, err := setup.ResolveDir("")

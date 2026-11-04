@@ -91,6 +91,34 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "doctor":
+			if guardHiddenCmd() {
+				os.Exit(2)
+			}
+			code, err := doctorCmd(os.Args[2:], os.Stdout)
+			if err != nil {
+				slog.Error("doctorが失敗しました", "error", err)
+				os.Exit(1)
+			}
+			os.Exit(code) // 実行結果が答え(fail>0 → 1)
+		case "models":
+			if guardHiddenCmd() {
+				os.Exit(2)
+			}
+			if err := modelsCmd(os.Args[2:], os.Stdout); err != nil {
+				slog.Error("modelsが失敗しました", "error", err)
+				os.Exit(1)
+			}
+			return
+		case "secrets":
+			if guardHiddenCmd() {
+				os.Exit(2)
+			}
+			if err := secretsCmd(os.Args[2:], os.Stdout); err != nil {
+				slog.Error("secretsが失敗しました", "error", err)
+				os.Exit(1)
+			}
+			return
 		case "-v", "-version", "--version", "version":
 			fmt.Printf("gateway (pi-llm-gateway) %s\n", appVersion)
 			return
