@@ -28,6 +28,8 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 - `setup.Guard()` は runtime dir が完全(config+secrets揃い=セットアップ済み扱い)でも、カレントに
   同じ構成があることを要求していたため、ランチャ(=runtime dir cd)以外の場所から `doctor` 等を実行すると
   「未セットアップ」で誤って拒否された。runtime dir 完全時は CWD 要件を外す(未セットアップ判定は維持)
+- メニュー(2回目以降の裸`gateway`)入口で、setup.json 無しのmanual構成(wizard移行前の環境)を
+  自動棚卸し: setup.json 生成(doctor [1])+ 実行中CLIをruntime binへ自己コピー(doctor [9] 版差の解消)。
 
 ### 修正 — ウィザードで選択可能な nvidia / groq / openrouter がサーバー起動時に必ず失敗する問題
 

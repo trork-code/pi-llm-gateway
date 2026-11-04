@@ -252,6 +252,7 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	syncManualState(paths, stdout)
 	fmt.Fprintln(stdout, "Managing your gateway. Type a number, or q to quit.")
 	for {
 		sum := currentSummary(paths)
@@ -304,6 +305,42 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 // MenuRuntime はメニュー/隠しCLIが前提とする環境(runtime paths + secrets + recipient)を公開版で。
 // MenuRuntime は runtimeFromEnv のエクスポート版(cmd層の隠しCLIからも使う)。
 func MenuRuntime() (setup.Paths, *secrets.Secrets, string, error) { return runtimeFromEnv() }
+
+// syncManualState は setup.json 無しの既存環境(wizard以前の手動構築)をメニュー入口で棚卸しする。
+// setup.json を生成(doctor [1])+ 実行中CLIをruntime binへ自己コピー(doctor [9] 版差)する。
+// 既に setup.json がある場合(=ウィザード所有)は何もしない。起動値(PORT/BIND)はランチャ側の
+// 情報が優先のため、ここでは書かない(doctorがsetup.json無し時と同じくランチャ解析にフォールバック)。
+func syncManualState(paths setup.Paths, out io.Writer) {
+	if st, _ := setup.LoadState(paths); st != nil {
+		return
+	}
+	if !setup.IsComplete(paths, nil) {
+		return
+	}
+	st := &setup.State{Startup: "manual", IdentityMode: "file"}
+	if provs, err := configProviders(paths.Config); err == nil {
+		st.Providers = provs
+	}
+	st.Aliases = configAliases(paths.Config)
+	if f, err := readYAMLAliases(paths.Config); err == nil {
+		st.DefaultModel = f.DefaultModel
+	}
+	if _, err := os.Stat(piModelsPath()); err == nil {
+		st.PiRegistered = true
+	}
+	changed := false
+	if note, err := setup.SelfCopy(paths); err == nil && note != "" {
+		fmt.Fprintln(out, " "+note)
+		changed = true
+	}
+	if err := setup.SaveState(paths, st); err != nil {
+		return // 棚卸しの失敗は致命ではない(次回再実行)
+	}
+	changed = true
+	if changed {
+		fmt.Fprintln(out, " "+"bookkeeping updated: setup.json written (doctor is now fully available)")
+	}
+}
 
 // menuDoctor はメニュー「6) Diagnose」。隠しCLI doctor と同一コア(ops.Doctor)。
 // CLIVersion はわからないため版差比較はせず(bin単体の版表示のみ)。
