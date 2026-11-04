@@ -62,25 +62,25 @@ log "=== 1. 非対話 init ==="
 "$GW" init --provider ollamacloud --api-key env:OLLAMA_API_KEY --model gpt-oss:120b \
   --alias pi-e2e --port "$port" --no-start --yes --print-json --quiet >"$WORK/init1.json"
 expect "init --yes 成功" "0" "$?"
-[ -f "$RT/setup.json" ] && log "ok   setup.json 生成" || fail "setup.json が無い"
-[ -f "$RT/config/models.yaml" ] && log "ok   config 生成" || fail "config が無い"
-[ -f "$RT/secrets/identity.txt" ] && log "ok   identity 生成" || fail "identity が無い"
-[ -f "$RT/secrets/secrets.yaml.age" ] && log "ok   secrets 生成" || fail "secrets が無い"
+if [ -f "$RT/setup.json" ]; then log "ok   setup.json 生成"; else fail "setup.json が無い"; fi
+if [ -f "$RT/config/models.yaml" ]; then log "ok   config 生成"; else fail "config が無い"; fi
+if [ -f "$RT/secrets/identity.txt" ]; then log "ok   identity 生成"; else fail "identity が無い"; fi
+if [ -f "$RT/secrets/secrets.yaml.age" ]; then log "ok   secrets 生成"; else fail "secrets が無い"; fi
 if grep -q "dummy-not-a-real-key" "$RT/setup.json" "$RT/secrets"/* "$RT/gateway.log" 2>/dev/null; then
   fail "非秘匿ファイルに実キーが漏れている"
 else
   log "ok   非秘匿ファイルに実キー無し"
 fi
 BIN="$RT/bin/gateway"
-[ "$(uname)" = "Windows_NT" ] || [ -f "$RT/bin/gateway.exe" ] && BIN="$RT/bin/gateway.exe" || true
-[ -f "$BIN" ] && log "ok   bin自己コピー($BIN)" || fail "bin自己コピー無し($BIN)"
-[ -f "$RT/up.cmd" ] || [ -f "$RT/up.sh" ] && log "ok   ランチャ生成" || fail "ランチャ無し"
+if [ "$(uname)" = "Windows_NT" ] || [ -f "$RT/bin/gateway.exe" ]; then BIN="$RT/bin/gateway.exe"; fi
+if [ -f "$BIN" ]; then log "ok   bin自己コピー($BIN)"; else fail "bin自己コピー無し($BIN)"; fi
+if [ -f "$RT/up.cmd" ] || [ -f "$RT/up.sh" ]; then log "ok   ランチャ生成"; else fail "ランチャ無し"; fi
 contains "setup.json: provider記録" '"providers"' "$RT/setup.json"
 contains "setup.json: alias記録" '"pi-e2e"' "$RT/setup.json"
 
 log "=== 2. pi models.json マージ ==="
 key1="$(grep -o 'gk-[0-9a-f]*' "$GATEWAY_PI_MODELS" | head -1)"
-[ -n "$key1" ] && log "ok   gatewayキー(gk-)生成" || fail "gatewayキーが無い"
+if [ -n "$key1" ]; then log "ok   gatewayキー(gk-)生成"; else fail "gatewayキーが無い"; fi
 contains "baseUrl: ポート反映" "http://127.0.0.1:$port/v1" "$GATEWAY_PI_MODELS"
 contains "エイリアス反映" '"pi-e2e"' "$GATEWAY_PI_MODELS"
 contains "api形式" '"openai-completions"' "$GATEWAY_PI_MODELS"
@@ -91,8 +91,8 @@ log "=== 3. 再実行(キー保全) ==="
 key2="$(grep -o 'gk-[0-9a-f]*' "$GATEWAY_PI_MODELS" | head -1)"
 expect "gatewayキー流用" "$key1" "$key2"
 expect "gatewayブロック1つ" "1" "$(grep -c '"gateway": {' "$GATEWAY_PI_MODELS" || true)"
-baks="$(ls "$GATEWAY_PI_MODELS".bak-* 2>/dev/null | wc -l)"
-[ "$baks" -ge 1 ] && log "ok   バックアップ保持($baks世代)" || fail "再実行でバックアップが無い"
+baks="$(find "$(dirname "$GATEWAY_PI_MODELS")" -maxdepth 1 -name "$(basename "$GATEWAY_PI_MODELS").bak-*" 2>/dev/null | wc -l)"
+if [ "$baks" -ge 1 ]; then log "ok   バックアップ保持($baks世代)"; else fail "再実行でバックアップが無い"; fi
 
 log "=== 4. 生成物からサーバー起動(隠し serve) ==="
 AGE_IDENTITY_FILE="$RT/secrets/identity.txt" CONFIG_FILE="$RT/config/models.yaml" \
