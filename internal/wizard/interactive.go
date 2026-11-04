@@ -42,12 +42,13 @@ func RunInteractive(app Options, stdin io.Reader, stdout io.Writer) (*Summary, b
 	}
 	app.APIKeySpec = spec
 
-	// [3/5] model + alias
-	model, alias, ok := askModelAlias(in, stdout, prov)
+	// [3/5] model(pi id = 実モデル名の新規約。エイリアス質問は廃止)
+	fmt.Fprintln(stdout, "\n[3/5] The model id in pi is the model name itself.")
+	model, ok := askModel(in, stdout, prov, "[3/5] Which model?")
 	if !ok {
 		return nil, false, ErrAborted
 	}
-	app.Model, app.Alias = model, alias
+	app.Model, app.Alias = model, ""
 
 	// [4/5] pi登録
 	if !askYes(in, stdout, fmt.Sprintf("[4/5] Register the `gateway` provider in pi (%s)?", piModelsPath()), true) {
@@ -77,8 +78,8 @@ func RunInteractive(app Options, stdin io.Reader, stdout io.Writer) (*Summary, b
 // PrintSummary は完了サマリの対話表示(cmd層の非対話モードでも使う)。
 func PrintSummary(sum *Summary, w io.Writer) {
 	fmt.Fprintln(w, "──────────────────────────────────────────────")
-	fmt.Fprintf(w, "Setup complete.\n  runtime dir : %s\n  provider    : %s (gateway key fp %s, encrypted)\n  alias       : %s → %s\n",
-		sum.RuntimeDir, sum.Provider, sum.GatewayKeyFP, sum.Alias, sum.Model)
+	fmt.Fprintf(w, "Setup complete.\n  runtime dir : %s\n  provider    : %s (gateway key fp %s, encrypted)\n  model       : %s (pi /model id = the same model name)\n",
+		sum.RuntimeDir, sum.Provider, sum.GatewayKeyFP, sum.Model)
 	fmt.Fprintf(w, "  base url    : %s\n", sum.BaseURL)
 	if sum.PiRegistered {
 		fmt.Fprintf(w, "  pi          : registered (%d alias models written to models.json)\n", sum.PiModels)
@@ -95,12 +96,12 @@ func PrintSummary(sum *Summary, w io.Writer) {
 
 func askProvider(in *bufio.Reader, out io.Writer) (Provider, bool) {
 	if p, found := DetectEnv(os.Getenv); found {
-		fmt.Fprintf(out, "\n[1/5] Found %s in your environment.\n", p.EnvVar)
+		fmt.Fprintf(out, "\nFound %s in your environment.\n", p.EnvVar)
 		if askYes(in, out, fmt.Sprintf("Use provider %s?", p.ID), true) {
 			return p, true
 		}
 	}
-	fmt.Fprintln(out, "\n[1/5] Which provider do you want to use?")
+	fmt.Fprintln(out, "\nWhich provider do you want to use?")
 	n := 0
 	idx := []Provider(nil)
 	for _, p := range Catalog() {
@@ -128,7 +129,7 @@ func askProvider(in *bufio.Reader, out io.Writer) (Provider, bool) {
 
 func askAPIKey(in *bufio.Reader, out io.Writer, prov Provider) (string, bool) {
 	fmt.Fprintln(out, "")
-	fmt.Fprintf(out, "[2/5] Provide the API key for %s (%s).\n", prov.ID, prov.Title)
+	fmt.Fprintf(out, "Provide the API key for %s (%s).\n", prov.ID, prov.Title)
 	fmt.Fprintf(out, "  Paste the key, or type `env:%s`, `file:PATH`, or `-` then Enter to read stdin.\n", prov.EnvVar)
 	if prov.Note != "" {
 		fmt.Fprintf(out, "  note: %s\n", prov.Note)
@@ -149,21 +150,19 @@ func askAPIKey(in *bufio.Reader, out io.Writer, prov Provider) (string, bool) {
 	}
 }
 
-func askModelAlias(in *bufio.Reader, out io.Writer, prov Provider) (model, alias string, ok bool) {
+// askModel は実モデル名を1問だけ尋ねる(pi id = 実モデル名の新規約)。
+// header は呼び出し側の番号付き見出し(初回ウィザード [3/5]、メニュー [2/3] など)。
+func askModel(in *bufio.Reader, out io.Writer, prov Provider, header string) (string, bool) {
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "[3/5] Which model, and under which alias?")
+	fmt.Fprintln(out, header)
 	if prov.Note != "" {
 		fmt.Fprintf(out, "  note: %s\n", prov.Note)
 	}
-	model, ok = readLineDefault(in, out, fmt.Sprintf("  Model [%s]: ", prov.Suggest), prov.Suggest)
+	model, ok := readLineDefault(in, out, fmt.Sprintf("  Model [%s]: ", prov.Suggest), prov.Suggest)
 	if !ok {
-		return "", "", false
+		return "", false
 	}
-	alias, ok = readLineDefault(in, out, "  Alias  [pi-default]: ", "pi-default")
-	if !ok {
-		return "", "", false
-	}
-	return strings.TrimSpace(model), strings.TrimSpace(alias), true
+	return strings.TrimSpace(model), true
 }
 
 func askStartup(in *bufio.Reader, out io.Writer) (string, bool) {
@@ -257,8 +256,9 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 	for {
 		sum := currentSummary(paths)
 		fmt.Fprintln(stdout, "")
-		fmt.Fprintf(stdout, "  1) Add a provider\n")
+		fmt.Fprintf(stdout, "  1) Add a model            (a stored provider key is reused; only new providers ask for one)\n")
 		fmt.Fprintf(stdout, "  2) Replace a provider API key\n")
+		fmt.Fprintf(stdout, "  3) Set default model / remove a model\n")
 		fmt.Fprintf(stdout, "  4) Register pi (models.json) again\n")
 		fmt.Fprintf(stdout, "  6) Run diagnostics (doctor)\n")
 		fmt.Fprintf(stdout, "  q) Quit\n")
@@ -273,7 +273,7 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 		}
 		switch strings.TrimSpace(line) {
 		case "1":
-			if err := menuAddProvider(paths, in, stdout); err != nil {
+			if err := menuAddModel(paths, in, stdout); err != nil {
 				if errors.Is(err, ErrAborted) {
 					continue
 				}
@@ -281,6 +281,13 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 			}
 		case "2":
 			if err := menuReplaceKey(paths, in, stdout); err != nil {
+				if errors.Is(err, ErrAborted) {
+					continue
+				}
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			}
+		case "3":
+			if err := menuManageModels(paths, in, stdout); err != nil {
 				if errors.Is(err, ErrAborted) {
 					continue
 				}
@@ -297,7 +304,7 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 		case "", "q", "quit", "exit":
 			return nil
 		default:
-			fmt.Fprintln(stdout, "  unknown choice (1 / 2 / 4 / 6 / q)")
+			fmt.Fprintln(stdout, "  unknown choice (1 / 2 / 3 / 4 / 6 / q)")
 		}
 	}
 }
@@ -389,45 +396,184 @@ func runtimeFromEnv() (setup.Paths, *secrets.Secrets, string, error) {
 	return paths, sec, id.Recipient().String(), nil
 }
 
-func menuAddProvider(paths setup.Paths, in *bufio.Reader, out io.Writer) error {
-	prov, ok := askProvider(in, out)
-	if !ok {
-		return ErrAborted
-	}
-	spec, ok := askAPIKey(in, out, prov)
-	if !ok {
-		return ErrAborted
-	}
-	key, err := ResolveAPIKeySource(spec, in)
-	if err != nil {
-		return err
-	}
-	model, alias, ok := askModelAlias(in, out, prov)
-	if !ok {
-		return ErrAborted
-	}
-	if err := ops.UpsertProvider(paths.Config, prov.ID, prov.BaseURL); err != nil {
-		return err
-	}
+func menuAddModel(paths setup.Paths, in *bufio.Reader, out io.Writer) error {
+	// [1/3] provider選択(既存保存キーの有無を見える化。保存済みならキー質問はスキップ)
 	sec, recipients, err := secretsForPaths(paths)
 	if err != nil {
 		return err
 	}
-	if sec.APIKeys == nil {
-		sec.APIKeys = map[string]string{}
+	prov, ok := pickProvider(in, out, sec, paths)
+	if !ok {
+		return ErrAborted
 	}
-	sec.APIKeys[prov.ID] = key
-	if err := secrets.Save(paths.Secrets, sec, recipients); err != nil {
+	reusedKey := false
+	var apiKey string
+	if k := sec.APIKeys[prov.ID]; k != "" {
+		apiKey = k
+		reusedKey = true
+	} else {
+		// 新規プロバイダー(または設定済みでも未保存)のときのみキーを聞く(設計: 追加時のみ)
+		spec, ok := askAPIKey(in, out, prov)
+		if !ok {
+			return ErrAborted
+		}
+		apiKey, err = ResolveAPIKeySource(spec, in)
+		if err != nil {
+			return err
+		}
+		verifyUpstream(prov, apiKey, out, false)
+	}
+
+	// [2/3] model(pi id = 実モデル名。エイリアス質問は廃止)
+	model, ok := askModel(in, out, prov, "[2/3] Which model?")
+	if !ok {
+		return ErrAborted
+	}
+	if err := validModelName(model); err != nil {
 		return err
+	}
+	// 衝突確認: 同名モデルが別providerに割当済みなら移し替え確認(取り消し可)
+	if owner, err := ops.FindModel(paths.Config, model); err == nil && owner != nil && owner.Provider != prov.ID {
+		fmt.Fprintf(out, "\n  %q is currently assigned to provider %q (entry %q).\n", model, owner.Provider, owner.Key)
+		if !askYes(in, out, fmt.Sprintf("  Re-assign it to %s?", prov.ID), false) {
+			return ErrAborted
+		}
+	} else if owner != nil && owner.Provider == prov.ID {
+		fmt.Fprintln(out, "  already registered on this provider — refreshing the entry.")
+	}
+
+	if err := ops.UpsertProvider(paths.Config, prov.ID, prov.BaseURL); err != nil {
+		return err
+	}
+	if !reusedKey {
+		if sec.APIKeys == nil {
+			sec.APIKeys = map[string]string{}
+		}
+		sec.APIKeys[prov.ID] = apiKey
+		if err := secrets.Save(paths.Secrets, sec, recipients); err != nil {
+			return err
+		}
 	}
 	isDefault := !hasDefaultModel(paths.Config)
-	if err := ops.UpsertAlias(paths.Config, ops.AliasSpec{Alias: alias, Provider: prov.ID,
-		Model: model, Default: isDefault}); err != nil {
+	if err := ops.UpsertModel(paths.Config, prov.ID, model, isDefault); err != nil {
 		return err
 	}
-	port := menuPort(paths)
-	notifyReloadIfRunning(out, paths, port)
-	fmt.Fprintf(out, "added: %s → %s / %s%s\n", alias, prov.ID, model, defaultMark(isDefault))
+	keyNote := "reused stored key"
+	if !reusedKey {
+		keyNote = "API key saved"
+	}
+	fmt.Fprintf(out, "added: %s → %s / %s (%s)%s\n", model, prov.ID, model, keyNote, defaultMark(isDefault))
+
+	// [3/3] pi登録(既存登録済みなら提案。id=実モデル名のため /model に即出る)
+	registered := piRegistered(paths)
+	if registered && askYes(in, out, "[3/3] Register/refresh pi (models.json) now?", true) {
+		if err := menuPiRegister(paths, out); err != nil {
+			return err
+		}
+	} else if !registered {
+		fmt.Fprintln(out, "  pi is not registered yet — use menu 4 when you want it.")
+	}
+	notifyReloadIfRunning(out, paths, menuPort(paths))
+	return nil
+}
+
+// pickProvider はカタログからproviderを選ぶ。保存キーの有無をfpで見せる。
+func pickProvider(in *bufio.Reader, out io.Writer, sec *secrets.Secrets, paths setup.Paths) (Provider, bool) {
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "[1/3] Choose a provider:")
+	cfgProvs := map[string]bool{}
+	for _, id := range currentProviders(paths) {
+		cfgProvs[id] = true
+	}
+	idx := []Provider(nil)
+	n := 0
+	for _, p := range Catalog() {
+		if p.Disabled {
+			continue
+		}
+		n++
+		mark := "     (new)"
+		if cfgProvs[p.ID] {
+			mark = "  existing"
+		}
+		if k := sec.APIKeys[p.ID]; k != "" {
+			mark = fmt.Sprintf("  key stored (fp %s)", Fingerprint(k))
+		}
+		fmt.Fprintf(out, "  %d) %-12s %s%s\n", n, p.ID, p.Title, mark)
+		idx = append(idx, p)
+	}
+	for {
+		line := askLine(in, out, "Choose [1]", "1")
+		if line == "" && len(idx) > 0 {
+			return idx[0], true
+		}
+		if v, ok := pickNumber(line, len(idx)); ok {
+			return idx[v-1], true
+		}
+		if id, ok := Look(line); ok && !id.Disabled {
+			return id, true
+		}
+		fmt.Fprintf(out, "  choose 1-%d or a provider id (%s)\n", len(idx), strings.Join(EnabledIDs(), ", "))
+	}
+}
+
+// piRegistered はpi側にgatewayブロックがあるか(既存models.jsonの有無)。
+func piRegistered(paths setup.Paths) bool {
+	data, err := os.ReadFile(piModelsPath())
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "\"gateway\"")
+}
+
+// menuManageModels はメニュー3: 既定モデル変更とモデル削除。
+func menuManageModels(paths setup.Paths, in *bufio.Reader, out io.Writer) error {
+	rows, err := ops.ListAliases(paths.Config)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return errors.New("configにエイリアスがありません")
+	}
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Registered models:")
+	for i, r := range rows {
+		mark := " "
+		if r.Default {
+			mark = "*"
+		}
+		entry := r.Alias
+		if r.Alias != r.Model {
+			entry = fmt.Sprintf("%s → %s", r.Alias, r.Model)
+		}
+		fmt.Fprintf(out, "  %d) %s %-28s %s\n", i+1, mark, entry, r.Provider)
+	}
+	fmt.Fprintln(out, "")
+	opts := make([]string, len(rows))
+	for i, r := range rows {
+		opts[i] = r.Alias
+	}
+	s := askLine(in, out, fmt.Sprintf("Set default (1-%d, Enter=skip): ", len(rows)), "")
+	if v, ok := pickNumber(s, len(rows)); ok {
+		if err := ops.SetDefaultModel(paths.Config, opts[v-1]); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "default model: %s\n", opts[v-1])
+		notifyReloadIfRunning(out, paths, menuPort(paths))
+	}
+	s = askLine(in, out, fmt.Sprintf("Remove (1-%d, Enter=skip): ", len(rows)), "")
+	if v, ok := pickNumber(s, len(rows)); ok {
+		target := opts[v-1]
+		if err := ops.DeleteAlias(paths.Config, target); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "removed: %s\n", target)
+		// 実モデル名キー(pi に載っていた)を消した場合はpi側の掃除を促す
+		if !strings.Contains(target, "→") {
+			fmt.Fprintln(out, "  note: run menu 4 (Register pi) to drop it from pi's /model.")
+		}
+		notifyReloadIfRunning(out, paths, menuPort(paths))
+	}
 	return nil
 }
 

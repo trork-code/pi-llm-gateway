@@ -166,7 +166,8 @@ func TestPiInstall_FreshFile(t *testing.T) {
 	}
 	marr := gw["models"].([]any)
 	first := marr[0].(map[string]any)
-	if first["id"] != "pi-default" || first["_launch"] != true || first["contextWindow"].(float64) != 131072 {
+	// 新規約: pi id = 実モデル名(AliasではなくModel)
+	if first["id"] != "gpt-oss:120b" || first["_launch"] != true || first["contextWindow"].(float64) != 131072 {
 		t.Fatalf("models配列不正: %v", first)
 	}
 }

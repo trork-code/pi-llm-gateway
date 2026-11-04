@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trork-code/pi-llm-gateway/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -62,6 +63,40 @@ func writeFileSafe(path string, data []byte, mode os.FileMode) error {
 func FileExisted(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// UpsertModel は実モデル名キー(pi id = 実モデル名の新規約)でエントリを登録する。
+// models.<実モデル名> → provider とし、model フィールドにも同一値を書く(明示性のため)。
+// pi側models.jsonのidは PiInstall が id=実モデル名で書くため、pi /model は
+// `minimax-m3.1-flash [gateway]` のように実モデル名がそのまま出る。
+func UpsertModel(path, provider, model string, def bool) error {
+	if provider == "" || model == "" {
+		return errors.New("provider / model は必須です")
+	}
+	return UpsertAlias(path, AliasSpec{Alias: model, Provider: provider, Model: model, Default: def})
+}
+
+// ModelOwner は指定実モデル名が既にどのエントリ(provider)に割り当てられているか。
+// メニューの上書き確認(別providerへの移し替え)に使う。
+type ModelOwner struct {
+	Key      string // models.yaml のエントリキー(legacyエイリアスの場合はキー)
+	Provider string
+	Model    string
+}
+
+// FindModel は path のconfigから name(実モデル名)を指す最初のエントリを返す。
+// 見つからなければ (nil, nil)。
+func FindModel(path, name string) (*ModelOwner, error) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	keys := cfg.FindOwnersOfModel(name)
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	mc := cfg.Models[keys[0]]
+	return &ModelOwner{Key: keys[0], Provider: mc.Provider, Model: mc.Model}, nil
 }
 
 // --- YAMLノード操作 -------------------------------------------------------
@@ -561,7 +596,7 @@ func piModelsArray(aliases []AliasForPi) []map[string]any {
 	arr := make([]map[string]any, 0, len(aliases))
 	for _, a := range aliases {
 		m := map[string]any{
-			"id":      a.Alias,
+			"id":      a.Model, // pi id = 実モデル名(2026-11新規約)
 			"_launch": true,
 		}
 		if a.Meta.ContextWindow != 0 {

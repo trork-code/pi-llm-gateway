@@ -82,7 +82,7 @@ log "=== 2. pi models.json マージ ==="
 key1="$(grep -o 'gk-[0-9a-f]*' "$GATEWAY_PI_MODELS" | head -1)"
 if [ -n "$key1" ]; then log "ok   gatewayキー(gk-)生成"; else fail "gatewayキーが無い"; fi
 contains "baseUrl: ポート反映" "http://127.0.0.1:$port/v1" "$GATEWAY_PI_MODELS"
-contains "エイリアス反映" '"pi-e2e"' "$GATEWAY_PI_MODELS"
+contains "pi id=実モデル名(新規約)" '"gpt-oss:120b"' "$GATEWAY_PI_MODELS"
 contains "api形式" '"openai-completions"' "$GATEWAY_PI_MODELS"
 
 log "=== 3. 再実行(キー保全) ==="

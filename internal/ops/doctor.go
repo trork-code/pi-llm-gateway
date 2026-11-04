@@ -215,11 +215,32 @@ func doctorConfig(paths setup.Paths, st *setup.State) Check {
 		aliases = append(aliases, a)
 	}
 	sort.Strings(aliases)
+	// 同一実モデルが複数エントリ(別provider重複)の警告 — ResolveRequestは辞書順1件を
+	// 採用するため、どちらが使われるか分からなくなる。doctorで可視化する
+	byModel := map[string][]string{}
+	for key, mc := range cfg.Models {
+		byModel[mc.Model] = append(byModel[mc.Model], key)
+	}
+	var dups []string
+	for m, ks := range byModel {
+		if len(ks) > 1 {
+			sort.Strings(ks)
+			dups = append(dups, fmt.Sprintf("%s (%s)", m, strings.Join(ks, ", ")))
+		}
+	}
+	sort.Strings(dups)
 	if missing := stateAliasDrift(st, aliases); len(missing) > 0 {
 		return Check{No: 2, Status: CheckWarn, Label: "config/models.yaml",
 			Detail: fmt.Sprintf("%d aliases parsed (default=%s), but setup.json lacks: %s",
 				len(aliases), cfg.DefaultModel, strings.Join(missing, ", ")),
 			Fix: "re-run `gateway` (updates setup.json bookkeeping)",
+		}
+	}
+	if len(dups) > 0 {
+		return Check{No: 2, Status: CheckWarn, Label: "config/models.yaml",
+			Detail: fmt.Sprintf("%d aliases, default=%s — duplicate real model: %s",
+				len(aliases), cfg.DefaultModel, strings.Join(dups, "; ")),
+			Fix: "keep one entry (menu 3) — requests for that model resolve to the first entry",
 		}
 	}
 	return Check{No: 2, Status: CheckOK, Label: "config/models.yaml",
@@ -370,17 +391,13 @@ func doctorPi(paths setup.Paths, port, piPath string, opts DoctorOptions) []Chec
 		}
 	}
 
-	// 5. alias drift: config エイリアス ↔ pi gateway.models[].id
+	// 5. drift(pi id ↔ config): 新規約は pi id = 実モデル名。legacyエイリアスは情報表示
 	cfg, err := config.Load(resolveConfigPath(paths))
 	if err != nil {
 		cDrift.Status, cDrift.Detail = CheckSkip, "config unparsable (see check 2)"
 		return []Check{cKey, cDrift}
 	}
-	want := make([]string, 0, len(cfg.Models))
-	for a := range cfg.Models {
-		want = append(want, a)
-	}
-	sort.Strings(want)
+	want := cfg.ModelNameSet()
 	have := map[string]bool{}
 	for _, m := range gw.Models {
 		if m.ID != "" {
@@ -399,6 +416,10 @@ func doctorPi(paths setup.Paths, port, piPath string, opts DoctorOptions) []Chec
 	}
 	sort.Strings(extra)
 	wantURL := fmt.Sprintf("http://127.0.0.1:%s/v1", port)
+	legacyNote := ""
+	if legacy := cfg.LegacyAliases(); len(legacy) > 0 {
+		legacyNote = fmt.Sprintf(", %d legacy alias(es) kept for compatibility", len(legacy))
+	}
 	switch {
 	case len(missing) > 0 || len(extra) > 0:
 		var parts []string
@@ -417,7 +438,7 @@ func doctorPi(paths setup.Paths, port, piPath string, opts DoctorOptions) []Chec
 			"re-register pi: `gateway pi install` (menu 4)"
 	default:
 		cDrift.Status, cDrift.Detail = CheckOK,
-			fmt.Sprintf("%d/%d aliases match, baseUrl ok", len(want), len(gw.Models))
+			fmt.Sprintf("%d/%d model ids match (id = model name)%s, baseUrl ok", len(want), len(gw.Models), legacyNote)
 	}
 	return []Check{cKey, cDrift}
 }

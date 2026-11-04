@@ -17,7 +17,7 @@ Piから見るとただの「OpenAI互換API」。実際には裏側で本物の
 | `GET /healthz` | 認証不要の稼働確認。uptime・モデル構成・鍵数を返す（鍵値は含まない） |
 
 - **認証** — `Authorization: Bearer <gatewayキー>` をチェック。不一致は401
-- **モデル解決** — `model`（例: `pi-default`）を `config/models.yaml` で実プロバイダー/モデルに変換
+- **モデル解決** — `model`（pi側は実モデル名、例: `gpt-oss:120b`）を `config/models.yaml` で実プロバイダーに変換。旧エイリアスキーも完全一致で受理(互換)
 - **実キーの管理** — 実APIキーは `secrets/secrets.yaml.age`（age暗号化）で管理し、起動時のみメモリ上で復号。ディスクに平文を書き出さない
 - **エラー形式** — すべて `{ "error": { "message", "type", "code" } }` のOpenAI互換形
 
@@ -70,22 +70,26 @@ pi-llm-gateway/
 (`gateway init` も同じ。詳しい設計は [docs/design-distribution.md](docs/design-distribution.md)):
 
 ```bash
-gateway        # ウィザード: provider選択 → APIキー → エイリアス → pi登録 → 起動方式
+gateway        # ウィザード: provider選択 → APIキー(新規プロバイダー時のみ) → モデル → pi登録 → 起動方式
                # → ~/.pi-gateway に config/secrets/identity/launcher/bin を一式生成
                # → pi側 models.json に gateway プロバイダーを追加(バックアップ付き)
 
-# pi側で /model → エイリアスを選ぶだけ(プロバイダー切替はmodels.yamlの編集でも可)
+# pi側で /model → モデル名(実モデル名がそのままid)を選ぶだけ
+# モデル追加はメニュー1: 保存済みキーのプロバイダーなら キー再入力なし(キーはプロバイダー追加時のみ聞く)
 ```
 
 非対話(CI・インストーラ組み込み):
 
 ```bash
 gateway init --provider ollamacloud --api-key env:OLLAMA_API_KEY \
-  --model gpt-oss:120b --alias pi-default --yes --print-json
+  --model gpt-oss:120b --yes --print-json         # pi id = gpt-oss:120b (エイリアスなし)
+gateway init --provider ollamacloud --model glm-5.3-flash:cloud --yes  # キー保存済み→ --api-key省略可
 ```
 
-再実行はメニュー(プロバイダー追加/キー差し替え/pi再登録)。`pi models.json` は
-`providers.gateway` ブロックのみを所有し、タイムスタンプ付きバックアップを3世代残す。
+- **pi id の規約(2026-11)**: pi側 `/model` のidは実モデル名そのもの(例 `gpt-oss:120b [gateway]`)。
+  旧エイリアス(`pi-glm`等、`--alias`や手編集)も互換として受理するが、pi には載らない(legacy)
+- **再実行はメニュー**: 1)モデル追加 2)APIキー差し替え 3)既定変更/削除 4)pi再登録 6)診断。
+  `pi models.json` は `providers.gateway` ブロックのみを所有し、タイムスタンプ付きバックアップを3世代残す
 
 ## 手動セットアップ(上級・実機検証済み手順)
 

@@ -219,7 +219,9 @@ func TestRunSetup_RerunPreservesGatewayKey(t *testing.T) {
 	_ = secData
 	runSetupOnce(t, dir, "pi-e2e")
 	data, _ = os.ReadFile(piPath)
-	if !strings.Contains(string(data), "pi-second") || !strings.Contains(string(data), "pi-e2e") {
+	// pi id=実モデル名(新規約): models.jsonのidはエントリのmodelフィールド
+	if !strings.Contains(string(data), "m2") ||
+		!strings.Contains(string(data), "gpt-oss:120b") {
 		t.Fatalf("models.jsonに新aliasが反映されていない: %s", data)
 	}
 	if keyOf() != before {

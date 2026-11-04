@@ -5,6 +5,26 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 変更 — モデル追加UXの再設計(pi id=実モデル名・キー再入力の廃止)
+
+- **pi側のモデルidを実モデル名そのものに変更**(`/model` で `gpt-oss:120b [gateway]` のように出る):
+  `pi install`/ウィザードはmodels.json のidにエントリの実モデル名を書き、config/models.yaml も
+  実モデル名をエントリキーとして登録(`models.<実モデル名> → provider`)。旧エイリアスキー
+  (`pi-glm`など、`--alias`や手編集)も gateway は完全一致で引き続き受理(互換維持・legacy表示をdoctorへ)
+- **APIキーはプロバイダー追加時のみ**: 既存プロバイダーへのモデル追加では保存済みキーを流用し
+  キー質問を出さない(メニュー1・非対話とも)。メニュー1のプロバイダー選択はキー保存状態(fp)を見せる。
+  手入力キーの静かな上書き事故を廃止(キー保存は新規プロバイダー時/メニュー2の明示差し替え時のみ)
+- **エイリアス質問の廃止**: ウィザード[3/5]とメニューのモデル追加は「実モデル名」1問のみ。
+  `--alias` はlegacyオプションとして残置(piには表示されない旨を案内)
+- **メニュー再構成**: 1) モデル追加(キー流用+pi登録をその場で提案) 2) APIキー差し替え
+  3) 既定モデル変更/モデル削除(新設・ops.SetDefaultModel/DeleteAliasを配線) 4) pi再登録 6) 診断
+- 非対話: `--api-key` 省略可(保存済みプロバイダーのみ)。`gateway init --provider ollamacloud
+  --model gpt-oss:120b --yes` でキー不要
+- 新規プロバイダー追加時のキー検証プローブをメニュー経路でも実施(初回ウィザードと同一)
+- doctor: config重複実モデル検知(item2 warn)、pi id照合を実モデル名基準に更新+legacyエイリアス件数表示(item5)
+- 移行: `gateway pi install`(メニュー4)再実行でpi models.jsonのidが新規約に差し替わる。
+  pi内の既定モデルは旧idのままのため `/model` → 新id選択 → Ctrl+S で1回のみ再保存
+
 ### 追加 — doctor / models / secrets rotate(第2バッチ: 診断と保守のCLI化)
 
 - `gateway doctor`: セットアップ環境の整合性診断10項目(design-distribution.md §10)。runtime dir/setup.json・

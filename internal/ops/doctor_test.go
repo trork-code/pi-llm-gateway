@@ -103,7 +103,7 @@ func (e *doctorEnv) writeSetupJSON(t *testing.T, piRegistered bool) {
 
 func (e *doctorEnv) writePi(t *testing.T, apiKey string, extraModels ...string) {
 	t.Helper()
-	models := []map[string]any{{"id": "a1", "_launch": true, "reasoning": false}}
+	models := []map[string]any{{"id": "gpt-oss:120b", "_launch": true, "reasoning": false}} // 新規約: pi id = 実モデル名
 	for _, m := range extraModels {
 		models = append(models, map[string]any{"id": m, "_launch": true, "reasoning": false})
 	}

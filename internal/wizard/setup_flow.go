@@ -77,17 +77,25 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 	if !ok || prov.Disabled {
 		return nil, fmt.Errorf("未対応の provider %q (対応: %v)", app.Provider, EnabledIDs())
 	}
-	if app.Alias == "" {
-		app.Alias = defaultAliasName(app.Provider)
-	}
-	if err := validAlias(app.Alias); err != nil {
-		return nil, err
-	}
 	if app.Model == "" {
 		app.Model = prov.Suggest
 	}
 	if app.Model == "" {
 		return nil, fmt.Errorf("provider %q は推奨モデルを持たないため --model が必須です", app.Provider)
+	}
+	// pi id = 実モデル名(新規約): --alias 未指定時はエントリキー = 実モデル名。
+	// --alias 指定時は従来のエイリアスキー(legacy、pi表示では使われない)として登録する。
+	legacyAlias := false
+	if app.Alias == "" {
+		app.Alias = app.Model
+		if err := validModelName(app.Alias); err != nil {
+			return nil, err
+		}
+	} else {
+		legacyAlias = true
+		if err := validAlias(app.Alias); err != nil {
+			return nil, err
+		}
 	}
 	if app.Startup == "" {
 		app.Startup = "manual"
@@ -108,16 +116,8 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 	if app.Bind == "" {
 		app.Bind = "127.0.0.1"
 	}
-	spec := app.APIKeySpec
-	if spec == "" {
-		return nil, errors.New("API key が未指定です")
-	}
-	apiKey, err := ResolveAPIKeySource(spec, app.Stdin)
-	if err != nil {
-		return nil, err
-	}
 
-	// 1. runtime dir + 自己コピー + ランチャ
+	// 1. runtime dir + 自己コピー
 	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 		return nil, err
 	}
@@ -130,18 +130,36 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 		fmt.Fprintln(stdout, "note: "+note)
 	}
 
-	// 2. identity(バッチ1は file モードのみ。既存 identity があれば再利用)
+	// 2. identityとsecrets(キー解決より先に読む。既存プロバイダーのキー流用判定のため)
 	identityMode := "file"
 	recipients, err := ensureIdentity(paths)
 	if err != nil {
 		return nil, err
 	}
-
-	// 3. secrets(既存在すれば読み込んで upsert、無ければ新規)
 	sec, existed, err := loadOrCreateSecrets(paths)
 	if err != nil {
 		return nil, err
 	}
+	spec := app.APIKeySpec
+	var apiKey string
+	if spec == "" {
+		// --api-key省略: 既存プロバイダーでキー保存済みなら流用する(設計: キーは追加時のみ)
+		if k := sec.APIKeys[app.Provider]; k != "" {
+			apiKey = k
+			if !app.Quiet {
+				fmt.Fprintf(stdout, "note: reusing the stored %s key (fp %s). pass --api-key to replace it.\n", app.Provider, fp(apiKey))
+			}
+		} else {
+			return nil, errors.New("API key が未指定です(既存プロバイダーでも--api-keyを省略できるのはキー保存済みのときだけです)")
+		}
+	} else {
+		apiKey, err = ResolveAPIKeySource(spec, app.Stdin)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// 3. secrets(gatewayキーの保全と、--api-key明示時だけのproviderキー差し替え)
 	gwKey := ""
 	if keys := sec.AllGatewayKeys(); len(keys) > 0 {
 		gwKey = keys[0] // 既存キーの保全(設計§4.3 / §4.3の流用規則)
@@ -155,7 +173,7 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 	if sec.APIKeys == nil {
 		sec.APIKeys = map[string]string{}
 	}
-	sec.APIKeys[app.Provider] = apiKey
+	sec.APIKeys[app.Provider] = apiKey // --api-key省略時は既存値と同一(上書きは実質起きない)
 	if err := secrets.Save(paths.Secrets, sec, recipients); err != nil {
 		return nil, fmt.Errorf("secretsの暗号化に失敗: %w", err)
 	}
@@ -184,6 +202,9 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 				return nil, err
 			}
 		}
+	}
+	if legacyAlias && !app.Quiet {
+		fmt.Fprintf(stdout, "note: --alias %q is legacy compatibility; pi /model shows the model name (%q) as the id.\n", app.Alias, app.Model)
 	}
 
 	// 5. pi登録(既定ON)
@@ -277,6 +298,7 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 
 func defaultAliasName(provider string) string { return "pi-default" }
 
+// validAlias は旧規約のエイリアスキー(--alias指定時のみ使用。下位互換)。
 func validAlias(a string) error {
 	if a == "" || len(a) > 64 {
 		return errors.New("alias は 1..64 文字で指定してください")
@@ -286,6 +308,23 @@ func validAlias(a string) error {
 			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 		if !ok {
 			return fmt.Errorf("alias に使えるのは英数字と - _ . です(違反: %q)", string(r))
+		}
+	}
+	return nil
+}
+
+// validModelName は実モデル名(pi id そのもの)の検証。
+// ollamaのタグ(gpt-oss:120b)やopenrouterのスラッシュ名(meta-llama/llama-…)を許す。
+// 空白・制御文字・括弧など構造上まずい文字は不可。
+func validModelName(m string) error {
+	if m == "" || len(m) > 128 {
+		return errors.New("model は 1..128 文字で指定してください")
+	}
+	for _, r := range m {
+		ok := r == '-' || r == '_' || r == '.' || r == ':' || r == '/' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !ok {
+			return fmt.Errorf("model %q: PI id として使えない文字が含まれています(%q)", m, string(r))
 		}
 	}
 	return nil

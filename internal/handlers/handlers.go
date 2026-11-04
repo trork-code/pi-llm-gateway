@@ -125,8 +125,9 @@ func (h *Handlers) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// model resolver: エイリアス → (provider名, 実モデル名)
-	mc, ok := rt.Config.Resolve(in.Model)
+	// model resolver: リクエストのmodel id → (provider名, 実モデル名)。
+	// 新規約: id=実モデル名(pu側)。旧エイリアスキーも従来通り受理
+	mc, ok := rt.Config.ResolveRequest(in.Model)
 	if !ok {
 		apierr.Write(w, http.StatusBadRequest,
 			fmt.Sprintf("unknown model: %q", in.Model), "invalid_request_error", "model_not_found")

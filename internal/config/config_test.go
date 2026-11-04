@@ -76,3 +76,60 @@ providers:
 		t.Fatal("存在しないdefault_modelが弾かれていません")
 	}
 }
+
+// --- ResolveRequest(実モデル名キーの新規約) -----------------------------------
+
+const mixedYAML = `
+default_model: minimax-m3.1-flash
+models:
+  minimax-m3.1-flash:
+    provider: minimax
+  pi-glm:
+    provider: ollamacloud
+    model: glm-5.3-flash:cloud
+  glm-5.3-flash:cloud:
+    provider: ollamacloud
+providers:
+  minimax:
+    base_url: https://api.minimax.io/v1
+  ollamacloud:
+    base_url: https://ollama.com/v1
+`
+
+// 実モデル名キーで解決できる(pi id = 実モデル名)。legacyエイリアスも先に完全一致で受理。
+func TestResolveRequest(t *testing.T) {
+	cfg, err := Load(writeTemp(t, mixedYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mc, ok := cfg.ResolveRequest("minimax-m3.1-flash"); !ok || mc.Provider != "minimax" {
+		t.Errorf("model-name key = %+v, %v", mc, ok)
+	}
+	if mc, ok := cfg.ResolveRequest("glm-5.3-flash:cloud"); !ok || mc.Provider != "ollamacloud" {
+		t.Errorf("model-name key(legacyと同一名) = %+v, %v", mc, ok)
+	}
+	// legacy: エイリアスキー完全一致が優先(既存セッションの互換)
+	if mc, ok := cfg.ResolveRequest("pi-glm"); !ok || mc.Model != "glm-5.3-flash:cloud" {
+		t.Errorf("legacy alias = %+v, %v", mc, ok)
+	}
+	if _, ok := cfg.ResolveRequest("nope"); ok {
+		t.Error("unknown id must not resolve")
+	}
+}
+
+func TestModelNameSetAndLegacy(t *testing.T) {
+	cfg, err := Load(writeTemp(t, mixedYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := cfg.ModelNameSet()
+	if len(names) != 2 || names[0] != "glm-5.3-flash:cloud" || names[1] != "minimax-m3.1-flash" {
+		t.Errorf("ModelNameSet = %v", names)
+	}
+	if legacy := cfg.LegacyAliases(); len(legacy) != 1 || legacy[0] != "pi-glm" {
+		t.Errorf("LegacyAliases = %v", legacy)
+	}
+	if owners := cfg.FindOwnersOfModel("glm-5.3-flash:cloud"); len(owners) != 2 || owners[0] != "glm-5.3-flash:cloud" || owners[1] != "pi-glm" {
+		t.Errorf("FindOwnersOfModel = %v", owners)
+	}
+}
