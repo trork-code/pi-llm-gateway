@@ -82,9 +82,11 @@ func initCmd(rest []string, stdout io.Writer) error {
 
 // runNonInteractiveInit は --yes モード。対話なしで完走し、自動起動も行う。
 func runNonInteractiveInit(app wizard.Options, paths setup.Paths, noStart bool, stdout io.Writer) error {
-	if app.Provider == "" || app.APIKeySpec == "" {
+	// --api-key はキー保存済みのプロバイダーなら省略可(設計: キーはプロバイダー追加時のみ)。
+	// 流用可否の判定と未保存時のfail-closedはRunSetup側が担う(ここでは弾かない)。
+	if app.Provider == "" {
 		printInitUsage(stdout)
-		return errors.New("--provider と --api-key は非対話モード(--yes)で必須です")
+		return errors.New("--provider は非対話モード(--yes)で必須です。--api-key はキー保存済みのプロバイダーなら省略できます")
 	}
 	sum, err := wizard.RunSetup(app, stdout)
 	if err != nil {
@@ -241,15 +243,15 @@ func consumeValue(rest []string, i *int, hasValue bool, value string) string {
 func printInitUsage(w io.Writer) {
 	fmt.Fprintf(w, "usage: gateway init [flags]\n\nInteractive setup (first run) and management menu (afterwards).\nBare `gateway` behaves the same (with prompts).\n\nflags:\n")
 	fmt.Fprintf(w, "  --provider NAME       one of: %s\n", strings.Join(wizard.EnabledIDs(), " / "))
-	fmt.Fprint(w, `  --api-key SOURCE      value | env:NAME | file:PATH | - (stdin)
-  --model M             upstream model name (default: provider suggestion)
-  --alias A             pi model id (default: pi-default)
+	fmt.Fprint(w, `  --api-key SOURCE      value | env:NAME | file:PATH | - (stdin); optional for a provider with a stored key
+  --model M             upstream model name (default: provider suggestion; used as the pi id)
+  --alias A             (legacy) extra alias key; pi /model shows the model name as the id
   --pi / --no-pi        register into ~/.pi/agent/models.json (default: register)
   --startup MODE        manual (this release) | resident (login auto-start, later release)
   --port N              runtime port (default: 18080)
   --bind ADDR           listen address (default: 127.0.0.1)
   --runtime-dir DIR     runtime dir override (default: ~/.pi-gateway)
-  --yes                 non-interactive mode; --provider/--api-key required
+  --yes                 non-interactive mode; --provider required, --api-key optional if key stored
   --print-json          machine-readable summary (for installers/E2E)
   --quiet               minimal output
   --pi-key-replace      (advanced) replace a pi gateway.apiKey absent from secrets

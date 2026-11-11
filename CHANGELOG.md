@@ -5,6 +5,14 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 修正 — 非対話init(--yes)でのキー流用経路が届かない配線漏れ
+
+- `gateway init --provider P --model M --yes` で`--api-key`省略時の既存キー流用が、入口の必須チェック
+  ("--provider と --api-key は非対話モードで必須")で拒否されていた(README/CHANGELOGと記述が矛盾)。
+  入口は`--provider`のみ必須に緩和し、流用可否と未保存時のfail-closed(「API key が未指定」)はRunSetup側に委譲。
+  `init_cmd_test.go` に流用成功+キー値保全・クリーン環境fail-closedの2テストを追加。usageも現行仕様に更新
+  (`--yes`: --api-key optional if key stored、`--alias`: legacy表記)
+
 ### 変更 — モデル追加UXの再設計(pi id=実モデル名・キー再入力の廃止)
 
 - **pi側のモデルidを実モデル名そのものに変更**(`/model` で `gpt-oss:120b [gateway]` のように出る):
