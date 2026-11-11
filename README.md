@@ -271,9 +271,15 @@ pi側は OpenAI互換 provider として宣言する(例: `%USERPROFILE%\.pigen
   "apiKey": "<gatewayキー>",
   "baseUrl": "http://127.0.0.1:18080/v1",
   "models": [ { "id": "pi-ollama-120b", "_launch": true, "reasoning": true,
-                "contextWindow": 131072, "input": ["text"] } ]
+                "contextWindow": 131072, "input": ["text"],
+                "compat": {"supportsDeveloperRole": false} } ]
 }
 ```
+
+- **`compat.supportsDeveloperRole: false` を推奨**(`pi install` は自動で焼く): pi-aiは既知providerでのみ
+  developer roleを使い、provider名"gateway"は未知のため reasoningモデルが一律 `developer` を送る。
+  NVIDIA/ollamacloudは受理するが **Groq等は400 invalid role** を返す。明示でsystem統一し
+  thinkingの扱いは変わらない(モデル毎に上書き可)
 
 - 運用手順: ゲートウェイの常駐dirに `bin/gateway.exe` + `config/models.yaml` + `secrets/` を置き、
   env(PORT/BIND/CONFIG_FILE/SECRETS_FILE/AGE_IDENTITY_FILE)を設定したランチャで `gateway up`

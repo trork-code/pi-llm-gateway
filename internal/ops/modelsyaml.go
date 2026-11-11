@@ -598,6 +598,12 @@ func piModelsArray(aliases []AliasForPi) []map[string]any {
 		m := map[string]any{
 			"id":      a.Model, // pi id = 実モデル名(2026-11新規約)
 			"_launch": true,
+			// pi-ai仕様: reasoningモデルは既知provider判定がtrueのとき role:"developer" で
+			// systemを送る(provider="gateway" はpi-aiに未知のため既定trueが続く)。NVIDIA/ollamacloudは
+			// developerを受理するが、Groq等は 400 invalid role: developer を返す。
+			// compat を明示すると自動判定を上書きするため、system統一で
+			// 任意の上流に届くようにする。thinking(reasoning)の扱いは変わらない。
+			"compat": map[string]any{"supportsDeveloperRole": false},
 		}
 		if a.Meta.ContextWindow != 0 {
 			m["contextWindow"] = a.Meta.ContextWindow

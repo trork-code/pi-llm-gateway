@@ -5,6 +5,17 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 修正 — pi側models.jsonへの role 正規化(pi-aiのdeveloper送りを回避)
+
+- pi-aiはreasoningモデルのsystemプロンプトを `developer` role で送るが、その判定はprovider名/baseURL依存。
+  provider名"gateway"はpi-aiに未知のため reasoning:true のモデルが一律 developer で飛び、**Groq等が
+  400 invalid role: developer** を返す(NVIDIA/ollamacloudは受理)。`pi install`/ウィザードが書く
+  gatewayモデルに `"compat": {"supportsDeveloperRole": false}` を焼き system に統一(pi-aiの自動判定を
+  上書き)。thinkingの挙動は変わらず、NVIDIA/groq/ollamacloudの各上流で共通に動作する。
+  実機環境の反映はpi models.jsonのgateway再登録(`gateway pi install`相当/メニュー4)で差替え
+
+docs/models.json公式schema: reasoning 既定はfalse; compatはprovider/model双方で指定可(pi.dev/schemas)。
+
 ### 変更 — runtime dir 自己解決（up.cmd/up.shの統合: PR#1 採用）
 
 - **`gateway up/serve/down` が env無しで完結する**: envが無い場合は `GATEWAY_RUNTIME_DIR`(既定 `~/.pi-gateway`)

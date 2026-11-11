@@ -170,6 +170,11 @@ func TestPiInstall_FreshFile(t *testing.T) {
 	if first["id"] != "gpt-oss:120b" || first["_launch"] != true || first["contextWindow"].(float64) != 131072 {
 		t.Fatalf("models配列不正: %v", first)
 	}
+	// compat: system統一(pi-aiのdeveloper送りを回避; Groq等の400予防)
+	compat := first["compat"].(map[string]any)
+	if compat["supportsDeveloperRole"] != false {
+		t.Fatalf("compat.supportsDeveloperRole を焼くべき: %v", first)
+	}
 }
 
 func TestPiInstall_ReusesExistingKey(t *testing.T) {
