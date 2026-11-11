@@ -5,6 +5,17 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 変更 — runtime dir 自己解決（up.cmd/up.shの統合: PR#1 採用）
+
+- **`gateway up/serve/down` が env無しで完結する**: envが無い場合は `GATEWAY_RUNTIME_DIR`(既定 `~/.pi-gateway`)
+  の標準配置から CONFIG_FILE / SECRETS_FILE / AGE_IDENTITY_FILE を発見し、接続先/リッスンポートは
+  PORT env > setup.json > ランチャ(`PORT=`/`BIND=`行の解析、doctorと同一規約) > 8080 の順で補う。
+  env明示は常に優先(上級 identity env/CMD 経路・テストからの使い方は変わらない)。pi内・対話シェルから
+  1コマンドで up/status/down が正しい runtime dir/ポートへ届くようになり、`8080誤判定→identity無しで
+  serveが即死→10秒タイムアウト` の現象が解消(docs/proposal-startup.md PR#1: 全面採用。フォアグラウンド
+  serve+OS supervisor化は第3バッチ・autostartの設計指針)。`up` 未指定時のログ先は `<runtime>/gateway.log`
+  に変更(呼び出し元のカレントに散らばらない)。E2Eに「ランチャを経由せず env無しで up/status/down」を追加
+
 ### 修正 — 非対話init(--yes)でのキー流用経路が届かない配線漏れ
 
 - `gateway init --provider P --model M --yes` で`--api-key`省略時の既存キー流用が、入口の必須チェック

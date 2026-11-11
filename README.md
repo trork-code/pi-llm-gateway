@@ -244,6 +244,11 @@ pi coding agentからの利用を想定した最低手順コマンド。接続�
 （`http://127.0.0.1:<PORT|8080>`）。プロバイダーの切り替えはpiのモデル選択だけで行える
 （`/v1/models` がエイリアス一覧を列挙するため、pi側でモデルを変えるとgatewayが対応providerへ振り分ける）。
 
+**runtime dir 自己解決**: envが無い場合は `GATEWAY_RUNTIME_DIR`(既定 `~/.pi-gateway`)の標準配置から
+CONFIG_FILE / SECRETS_FILE / AGE_IDENTITY_FILE / PORT / BIND を補う（env明示は常に優先。
+setup.json無しのmanual構成はランチャから PORT=/BIND= 解析。docs/proposal-startup.md PR#1 方向：
+ランチャに頼らず `gateway up/serve/down` が単独で完結する）。
+
 ```bash
 gateway up        # 稼働していなければバックグラウンド起動→READY表示（冪等。セッション先頭で1回でOK）
 gateway status    # 稼働中: URL・uptime・エイリアス→provider割当・鍵数を表示。未起動でも正常終了

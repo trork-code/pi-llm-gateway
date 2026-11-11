@@ -8,8 +8,11 @@
 #   4. pi uninstall / pi install(再マージ)
 #   5. 生成物から `gateway serve`(隠し・旧裸動作)が立ち上がり、認証が効く
 #      (401未認証 → 200正キー → down)
-#   6. セットアップ済み環境で裸 gateway(非TTY)は案内のみ(menuは対話専用)
-#   7. 未セットアップ環境の隠しコマンド導線③(up → ガード文言 + exit 2)
+#   6. 稼働中への変更反映(admin/reload)
+#   6b. 統合(runtime dir 自己解決): ランチャを経由せず env 無しで up/status/down が完結
+#      (docs/proposal-startup.md PR#1 方向: バイナリが標準配置/setup.json/identity を発見する)
+#   7. セットアップ済み環境で裸 gateway(非TTY)は案内のみ(menuは対話専用)
+#   8. 未セットアップ環境の隠しコマンド導線③(up → ガード文言 + exit 2)
 #
 # 実行: bash scripts/local-init-e2e.sh   (go と curl が必要。実ネットワークに触れない)
 set -eu
@@ -44,9 +47,14 @@ log "=== ビルド ==="
 GO="${GO:-go}"
 command -v "$GO" >/dev/null 2>&1 || { log "ERROR: go が見つかりません(GO=PATHを指定可)"; exit 1; }
 command -v curl >/dev/null 2>&1 || { log "ERROR: curl が見つかりません"; exit 1; }
-"$GO" build -o "$WORK/gateway" ./cmd/gateway
+# Windowsでは生成物に .exe を付ける(up の spawn 子が os.Executable() で実行するため)。
+BINOUT="$WORK/gateway"
+case "$(uname)" in
+  *MINGW*|*MSYS*|*CYGWIN*|*Windows*) BINOUT="$WORK/gateway.exe" ;;
+esac
+"$GO" build -o "$BINOUT" ./cmd/gateway
 
-GW="$WORK/gateway"
+GW="$BINOUT"
 # 動的ポート: 残留サーバー等との衝突を避ける(18100-18140の空きポート)
 port=""
 for p in $(seq 18100 18140); do
@@ -125,6 +133,47 @@ expect "admin/reload 200" "200" "$POST_OK"
 
 kill $GWPID 2>/dev/null || true
 wait $GWPID 2>/dev/null || true
+
+log "=== 6b. 統合: ランチャを経由せず env 無しで gateway up/status/down 直接 ==="
+# PR #1(docs/proposal-startup.md)の中核: バイナリが runtime dir の標準配置と
+# setup.json(port/bind)/identity を自己解決する。親 up が spawn する serve も同じ発見で起動する。
+CLEAR_ENV="env -u PORT -u BIND -u CONFIG_FILE -u SECRETS_FILE -u AGE_IDENTITY_FILE -u AGE_PASSPHRASE -u SECRETS_DECRYPT_CMD -u GATEWAY_ADDR -u GATEWAY_RELOAD_ADDR -u GATEWAY_KEY"
+set +e
+UP_OUT="$(GATEWAY_RUNTIME_DIR="$RT" $CLEAR_ENV "$GW" up 2>&1)"; up_rc=$?
+set -e
+printf '%s\n' "$UP_OUT" >"$WORK/up_direct.out"
+expect "up 直接(env無し) rc=0" "0" "$up_rc"
+contains "up直接: READY表示" "READY" "$WORK/up_direct.out"
+contains "READYのポートがsetup.json由来" "http://127.0.0.1:$port/v1" "$WORK/up_direct.out"
+
+set +e
+ST_OUT="$(GATEWAY_RUNTIME_DIR="$RT" $CLEAR_ENV "$GW" status 2>&1)"; st_rc=$?
+set -e
+printf '%s\n' "$ST_OUT" >"$WORK/status_direct.out"
+expect "status 直接(env無し) rc=0" "0" "$st_rc"
+contains "status直接: 稼働ポート表示" "$port" "$WORK/status_direct.out"
+
+set +e
+DN_OUT="$(GATEWAY_RUNTIME_DIR="$RT" $CLEAR_ENV "$GW" down 2>&1)"; dn_rc=$?
+set -e
+printf '%s\n' "$DN_OUT" >"$WORK/down_direct.out"
+expect "down 直接(env無し) rc=0" "0" "$dn_rc"
+contains "down直接: 受付表示" "停止を受け付けました" "$WORK/down_direct.out"
+# shutdownは応答後に300ms待って閉じる。Windowsのspawn系は実際の落ちまで数秒かかることがあるため
+# 最長15s待つ(最終的に落ちなければFAIL: PR#1のspawn廃止でこの経路は消える予定)
+off="no"
+for _ in $(seq 1 300); do
+  sleep 0.2
+  c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$base/healthz" 2>/dev/null || true)"
+  if [ -z "$c" ] || [ "$c" = "000" ]; then off="yes"; break; fi
+done
+log "[診断] オフループ終了時の末尾応答: $c"
+expect "down後 /healthz 到達不可" "yes" "$off"
+if [ "$off" != "yes" ]; then
+  log "[診断] healthz応答: $c / $port のLISTEN状況:"
+  netstat -ano 2>/dev/null | grep ":$port" | head -5 || true
+  tasklist 2>/dev/null | grep -i gateway || true
+fi
 
 log "=== 7. セットアップ済みで裸 gateway(非TTY)は案内のみ ==="
 OUT="$(echo | "$GW" 2>&1)" || true

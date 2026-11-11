@@ -259,12 +259,34 @@ func run(check bool) error {
 		log.Warn("コアダンプの無効化に失敗しました(systemdのLimitCORE=0を推奨)", "error", err)
 	}
 
-	// 2. 環境変数
-	port := envOr("PORT", "8080")
-	bind := envOr("BIND", "127.0.0.1") // 既定はループバックのみでリッスン
+	// 2. 環境変数(env優先、無ければ runtime dir の標準配置から補う: runtime dir 統合)
+	disc, err := setup.Discover("")
+	if err != nil {
+		return err
+	}
+	if !disc.NotFound {
+		log.Info("runtime dirを参照します", "dir", disc.Dir,
+			"config_from_env", os.Getenv("CONFIG_FILE") != "",
+			"secrets_from_env", os.Getenv("SECRETS_FILE") != "",
+			"identity_from_env", os.Getenv("AGE_IDENTITY_FILE") != "" || os.Getenv("AGE_IDENTITY") != "" || os.Getenv("AGE_IDENTITY_CMD") != "")
+	}
+	port := envOr("PORT", "")
+	if port == "" {
+		port = disc.Port // setup.json > ランチャ解析(無ければ下の既定)
+	}
+	if port == "" {
+		port = "8080"
+	}
+	bind := envOr("BIND", "")
+	if bind == "" {
+		bind = disc.Bind
+	}
+	if bind == "" {
+		bind = "127.0.0.1" // 既定はループバックのみでリッスン
+	}
 	app := &appEnv{
-		configFile:  envOr("CONFIG_FILE", "config/models.yaml"),
-		secretsFile: envOr("SECRETS_FILE", "secrets/secrets.yaml.age"),
+		configFile:  envOr("CONFIG_FILE", withFallback(disc.Config, "config/models.yaml")),
+		secretsFile: envOr("SECRETS_FILE", withFallback(disc.Secrets, "secrets/secrets.yaml.age")),
 		passphrase:  os.Getenv("AGE_PASSPHRASE"),
 		decryptCmd:  os.Getenv("SECRETS_DECRYPT_CMD"),
 		strictKeys:  os.Getenv("STRICT_KEYS") != "" || check,
@@ -275,7 +297,7 @@ func run(check bool) error {
 		log.Info("secretsを外部コマンドで復号します(SECRETS_DECRYPT_CMD。YubiKeyプラグイン等に対応)")
 	} else {
 		var err error
-		if app.ident, err = resolveIdentitySource(log); err != nil {
+		if app.ident, err = resolveIdentitySource(log, disc.Identity); err != nil {
 			return err
 		}
 	}
@@ -538,7 +560,9 @@ func applyEgressAllowlist(log *slog.Logger, cfg *config.Config) error {
 
 // resolveIdentitySource は秘密鍵の取得経路を環境変数から決める。
 // ファイル/環境変数/コマンド実行の3系統で、重複指定は曖昧さ回避のため拒否する。
-func resolveIdentitySource(log *slog.Logger) (identitySource, error) {
+// いずれのenvも無い場合のみ、runtime dir の secrets/identity.txt(runtimeIdentity)を
+// ファイル経路のフォールバックとして採用する(runtime dir 統合)。
+func resolveIdentitySource(log *slog.Logger, runtimeIdentity string) (identitySource, error) {
 	file := os.Getenv("AGE_IDENTITY_FILE")
 	inline := os.Getenv("AGE_IDENTITY")
 	cmd := os.Getenv("AGE_IDENTITY_CMD")
@@ -554,6 +578,10 @@ func resolveIdentitySource(log *slog.Logger) (identitySource, error) {
 		found = append(found, "AGE_IDENTITY_CMD")
 	}
 	if len(found) == 0 {
+		if runtimeIdentity != "" {
+			log.Info("秘密鍵をruntime dirから発見します", "file", runtimeIdentity)
+			return identitySource{kind: "file", file: runtimeIdentity}, nil
+		}
 		return identitySource{}, errors.New("環境変数 AGE_IDENTITY_FILE / AGE_IDENTITY / AGE_IDENTITY_CMD のいずれかを設定してください(age秘密鍵を指定してください)")
 	}
 	if len(found) > 1 {
@@ -659,6 +687,14 @@ func buildTLSConfig(clientCAFile string) (*tls.Config, error) {
 func envOr(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
+	}
+	return def
+}
+
+// withFallback は発見値(空なら従来既定)を返す。envOrの後段で使う。
+func withFallback(found, def string) string {
+	if strings.TrimSpace(found) != "" {
+		return found
 	}
 	return def
 }

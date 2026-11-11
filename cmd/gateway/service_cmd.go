@@ -31,6 +31,7 @@ import (
 	"github.com/awnumar/memguard"
 
 	"github.com/trork-code/pi-llm-gateway/internal/secrets"
+	"github.com/trork-code/pi-llm-gateway/internal/setup"
 )
 
 // defaultGatewayPort はサーバー(PORT env)と接続先の共通既定ポート。
@@ -38,6 +39,14 @@ const defaultGatewayPort = "8080"
 
 // defaultGatewayLog は`up`で起動したサーバーのログファイル名。
 const defaultGatewayLog = "gateway.log"
+
+// defaultUpLog は -log 未指定時のログ出力先(runtime dir 基準が正。CWDに散らばらせない)。
+func defaultUpLog() string {
+	if d, err := setup.Discover(""); err == nil && d.Log != "" {
+		return d.Log
+	}
+	return defaultGatewayLog
+}
 
 // serviceFlags は up/status/down の共通フラグ。
 type serviceFlags struct {
@@ -48,6 +57,8 @@ type serviceFlags struct {
 
 // resolveGatewayURL はゲートウェイの自己接続URLを決める。
 // 環境(PORT等)から自動決定するため、運用者は通常フラグ不要。
+// PORT envが無い場合は runtime dir(setup.json > ランチャ解析)から既定ポートを補う
+// (runtime dir 統合: 対話シェル・pi内の1コマンド実行で実稼働ポートを正しく見つける)。
 func resolveGatewayURL(addrOverride string) string {
 	if addrOverride != "" && strings.TrimSpace(addrOverride) != "" {
 		return strings.TrimRight(addrOverride, "/")
@@ -57,7 +68,19 @@ func resolveGatewayURL(addrOverride string) string {
 			return strings.TrimRight(v, "/")
 		}
 	}
-	return "http://127.0.0.1:" + envOr("PORT", defaultGatewayPort)
+	return "http://127.0.0.1:" + resolveGatewayPort()
+}
+
+// resolveGatewayPort は接続先ポートを決める(PORT env > setup.json > ランチャ解析 > 8080。
+// doctor と同一の規約)。
+func resolveGatewayPort() string {
+	if v := envOr("PORT", ""); v != "" {
+		return v
+	}
+	if d, err := setup.Discover(""); err == nil && d.Port != "" {
+		return d.Port
+	}
+	return defaultGatewayPort
 }
 
 // extractServiceFlags は up/status/down 用の簡易フラグ解析(位置引数の前後どちらでも可)。
@@ -186,7 +209,7 @@ func serviceUp(log *slog.Logger, url, logPath string, stdout io.Writer) error {
 		return nil
 	}
 	if logPath == "" {
-		logPath = defaultGatewayLog
+		logPath = defaultUpLog()
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -340,8 +363,13 @@ func fetchHealth(url string) (*healthResponse, error) {
 }
 
 // loadSecretsForCLI は keys/service CLI用のsecrets復号(サーバーと同じ環境変数と経路)。
+// env 未指定時は runtime dir の標準配置から secrets/identity を補う(runtime dir 統合)。
 func loadSecretsForCLI(log *slog.Logger) (*secrets.Secrets, error) {
-	secretsFile := envOr("SECRETS_FILE", "secrets/secrets.yaml.age")
+	disc, derr := setup.Discover("")
+	if derr != nil {
+		return nil, derr
+	}
+	secretsFile := envOr("SECRETS_FILE", withFallback(disc.Secrets, "secrets/secrets.yaml.age"))
 	decryptCmd := os.Getenv("SECRETS_DECRYPT_CMD")
 	opts := secrets.LoadOptions{
 		EncryptedPath:  secretsFile,
@@ -349,7 +377,7 @@ func loadSecretsForCLI(log *slog.Logger) (*secrets.Secrets, error) {
 		DecryptCommand: decryptCmd,
 	}
 	if decryptCmd == "" {
-		ident, err := resolveIdentitySource(log)
+		ident, err := resolveIdentitySource(log, disc.Identity)
 		if err != nil {
 			return nil, err
 		}

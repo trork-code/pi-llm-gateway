@@ -6,10 +6,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"filippo.io/age"
+	"filippo.io/age/armor"
+	"gopkg.in/yaml.v3"
+
 	"github.com/trork-code/pi-llm-gateway/internal/secrets"
+	"github.com/trork-code/pi-llm-gateway/internal/setup"
 )
 
 func TestResolveGatewayURLOverride(t *testing.T) {
@@ -159,4 +166,95 @@ func TestResolveGatewayKeyFromSecrets(t *testing.T) {
 	}
 }
 
+// TestResolveGatewayPort_FromRuntimeDir は PORT env 無しのとき
+// runtime dir(setup.json > ランチャ解析)から接続先ポートを補う(runtime dir 統合)。
+func TestResolveGatewayPort_FromRuntimeDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "rt")
+	paths := setup.Layout(dir)
+	if err := os.MkdirAll(paths.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := setup.SaveState(paths, &setup.State{Port: 18099, Bind: "127.0.0.1", IdentityMode: "file"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GATEWAY_RUNTIME_DIR", dir)
+	for _, k := range []string{"PORT", "GATEWAY_ADDR", "GATEWAY_RELOAD_ADDR"} {
+		_ = os.Unsetenv(k)
+	}
+	if got := resolveGatewayPort(); got != "18099" {
+		t.Fatalf("setup.json のポートが採用されるべき: %q", got)
+	}
+	if got := resolveGatewayURL(""); got != "http://127.0.0.1:18099" {
+		t.Fatalf("接続先URL: %q", got)
+	}
+}
+
+// TestLoadSecretsForCLI_RuntimeDirDiscovery は env 無しでも runtime dir の
+// secrets/identity.txt を発見して復号できる(runtime dir 統合)。
+func TestLoadSecretsForCLI_RuntimeDirDiscovery(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "rt")
+	paths := setup.Layout(dir)
+	if err := os.MkdirAll(filepath.Dir(paths.Config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.Identity), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Config, []byte("default_model: pi-test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Identity, []byte(id.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSecretsTo(t, paths.Secrets, id, &secrets.Secrets{Version: 1, GatewayKey: "gk-disc-0001"})
+
+	t.Setenv("GATEWAY_RUNTIME_DIR", dir)
+	for _, k := range []string{"AGE_IDENTITY_FILE", "AGE_IDENTITY", "AGE_IDENTITY_CMD",
+		"AGE_PASSPHRASE", "SECRETS_DECRYPT_CMD", "SECRETS_FILE"} {
+		_ = os.Unsetenv(k)
+	}
+
+	sec, err := loadSecretsForCLI(discardLog(t))
+	if err != nil {
+		t.Fatalf("runtime dir 発見で復号できるべき: %v", err)
+	}
+	defer sec.Zero()
+	keys := sec.AllGatewayKeys()
+	if len(keys) != 1 || keys[0] != "gk-disc-0001" {
+		t.Fatalf("gateway キー不一致: %v", keys)
+	}
+}
+
 // keysTestEnvSet はキューのキーテスト環境を再利用する(このパッケージのテスト用)。
+
+// writeTestSecretsTo はsecを指定パスへage暗号化(armor)して書き出す。
+// (keysTestEnvのwriteTestSecretsはファイル名固定のため、runtime layout用に別途用意)
+func writeTestSecretsTo(t *testing.T, path string, id *age.X25519Identity, sec *secrets.Secrets) {
+	t.Helper()
+	plain, err := yaml.Marshal(sec)
+	if err != nil {
+		t.Fatalf("YAMLの生成: %v", err)
+	}
+	var buf strings.Builder
+	aw := armor.NewWriter(&buf)
+	w, err := age.Encrypt(aw, id.Recipient())
+	if err != nil {
+		t.Fatalf("age暗号化: %v", err)
+	}
+	if _, err := w.Write(plain); err != nil {
+		t.Fatalf("暗号化書き込み: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("age close: %v", err)
+	}
+	if err := aw.Close(); err != nil {
+		t.Fatalf("armor close: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(buf.String()), 0o600); err != nil {
+		t.Fatalf("secretsの書き出し(%s): %v", path, err)
+	}
+}
