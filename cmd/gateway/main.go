@@ -302,17 +302,35 @@ func run(check bool) error {
 		}
 	}
 
-	// 3〜5. Runtime構築(鍵・config・adapter) — 起動時と再読み込みで同じ経路を使う
+	// 3〜5. ドーマント構成判定(§8 / docs/design-batch3.md §3)→ Runtime構築(通常モードのみ)
 	build := func() (*handlers.Runtime, error) {
 		return buildRuntime(log, app)
 	}
-	rt, err := build()
-	if err != nil {
-		return err
+	// serve起動時のドーマント判定: 既定はsetup.jsonのstartup=="resident"。GATEWAY_DORMANT envで上書き。
+	dormant := !check && dormantFromConfig(disc.State, log)
+	if dormant {
+		if app.decryptCmd == "" && identityNeedsPassphrase(app.ident) {
+			log.Warn("passphrase保護identityはドーマント不適合のため通常ロードへフォールバックします(§8)")
+			dormant = false
+		}
 	}
 
-	// -check: 検証のみ行い、サーバーは起動しない
+	var rt *handlers.Runtime
+	if !dormant {
+		var err error
+		rt, err = build()
+		if err != nil {
+			return err
+		}
+	}
 	if check {
+		// -checkは常時鍵を復号したビューで検証する(dormant構成でも鍵・configを確認)
+		if rt == nil {
+			var err error
+			if rt, err = build(); err != nil {
+				return err
+			}
+		}
 		return reportCheck(log, rt, app)
 	}
 
@@ -321,7 +339,11 @@ func run(check bool) error {
 	if err != nil {
 		return fmt.Errorf("監査チェーンの初期化に失敗しました: %w", err)
 	}
-	h := handlers.New(rt, log, auditChain)
+	h := handlers.New(rt, log, auditChain) // rt==nil(ドーマントCOLD起動)を許可
+	var gate *dormantGate
+	if dormant {
+		gate = newDormantGate(h, build, log, auditChain, resolveIdleZero(log))
+	}
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
@@ -353,6 +375,10 @@ func run(check bool) error {
 
 	// 認証必須の経路はグループに集約
 	r.Group(func(authed chi.Router) {
+		if gate != nil {
+			// ドーマント: 認証の前にwarm(復号)。singleflightで同時多発は待ち合流(§8)
+			authed.Use(gate.middleware())
+		}
 		authed.Use(auth.MiddlewareConfig(h.GatewayKeys, int(envInt("AUTH_MAX_FAILURES", 20)), time.Minute))
 		authed.Post("/v1/chat/completions", h.ChatCompletions)
 		authed.Get("/v1/models", h.Models)
@@ -426,13 +452,23 @@ func run(check bool) error {
 	if tlsCert != "" {
 		scheme = "https"
 	}
-	log.Info("READY: gatewayを起動しました",
-		"url", scheme+"://"+displayHost(bind)+":"+port+"/v1",
-		"tls", tlsCert != "",
-		"default_model", rt.Config.DefaultModel,
-		"models", aliasSummary(rt.Config, 6),
-		"recipients", rt.Secrets.IdentityRecipients,
-		"hint", "pi側でモデルを選択して利用。状態は gateway status で確認")
+	if gate != nil {
+		gate.StartIdleZero(time.Second)
+		log.Info("READY: gatewayをドーマント待機で起動しました(鍵は初回リクエストで復号)",
+			"url", scheme+"://"+displayHost(bind)+":"+port+"/v1",
+			"tls", tlsCert != "",
+			"dormant", true,
+			"idle_zero_minutes", fmt.Sprintf("%g", gate.idle.Minutes()),
+			"hint", "状態は gateway status / /healthz(dormant:true)。gateway keys等のCLI操作はwarmを通さずsecretsを直接復号します")
+	} else {
+		log.Info("READY: gatewayを起動しました",
+			"url", scheme+"://"+displayHost(bind)+":"+port+"/v1",
+			"tls", tlsCert != "",
+			"default_model", rt.Config.DefaultModel,
+			"models", aliasSummary(rt.Config, 6),
+			"recipients", rt.Secrets.IdentityRecipients,
+			"hint", "pi側でモデルを選択して利用。状態は gateway status で確認")
+	}
 	var serveErr error
 	if tlsCert != "" {
 		serveErr = srv.ListenAndServeTLS(tlsCert, tlsKeyFile)

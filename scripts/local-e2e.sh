@@ -150,6 +150,38 @@ else
   assert_eq "ダミーキーstreamも上流401透過" "$CODE" "401"
 fi
 
+# --- ドーマント(COLD→warm→idle zero回帰、docs/design-batch3.md §3。別ポートでレート制限と独立) ---
+DP="${E2E_DORMANT_PORT:-18098}"
+DBASE="http://127.0.0.1:${DP}"
+log "ドーマント起動中... (port=$DP)"
+AGE_IDENTITY_FILE="$WORK/identity.txt" CONFIG_FILE="$WORK/config.yaml" \
+  SECRETS_FILE="$WORK/secrets.yaml.age" BIND=127.0.0.1 PORT="$DP" GATEWAY_DORMANT=1 \
+  IDLE_ZERO_MINUTES=0.002 \
+  "$WORK/gateway" serve >"$WORK/dormant.log" 2>&1 &
+DGW_PID=$!
+DORMANT="no"
+for _ in $(seq 1 50); do
+  sleep 0.2
+  H="$(curl -s --max-time 2 "$DBASE/healthz" 2>/dev/null || true)"
+  if [[ "$H" == *'"dormant": true'* ]]; then DORMANT="yes"; break; fi
+done
+ok "COLD起動でhealthzがdormant:true" "$DORMANT"
+
+C="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GW_KEY" --max-time 5 "$DBASE/v1/models" 2>/dev/null || true)"
+assert_eq "dormantからの初回リクエスト(warm含む)=200" "$C" "200"
+
+sleep 1.5  # IDLE_ZERO_MINUTES=0.002(120ms)+ticker(1s)でZero回帰
+H="$(curl -s --max-time 2 "$DBASE/healthz" 2>/dev/null || true)"
+if [[ "$H" == *'"dormant": true'* ]]; then
+  ok "idle経過でdormantに回帰(Zero)" yes
+else
+  ok "idle経過でdormantに回帰(Zero)" no
+  log "      healthz=$H"
+fi
+
+kill "$DGW_PID" 2>/dev/null || true
+wait "$DGW_PID" 2>/dev/null || true
+
 # --- レート制限(最後: 成功IPも約1分ブロックされるため) ---
 RL="no"
 for i in $(seq 1 21); do

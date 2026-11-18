@@ -5,6 +5,20 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 追加 — ドーマントモード(バッチ3 A案) + 詳細設計書
+
+- **docs/design-batch3.mdを新設**: PR#1(docs/proposal-startup.md)のプロセス契約を正とするバッチ3の詳細設計
+  (autostart 3OS仕様/up の新仕様/新ランチャ形式/dormant実装方針/PATH組込/goreleaser/検収要件)。
+  以後のバッチ3実装は本書に従う
+- **serveにドーマント状態機械を実装**(§8): setup.jsonの`startup=="resident"`(常駐構成)または
+  `GATEWAY_DORMANT=1`で serveは**鍵を復号せずに待ち受け(COLD)**し `/healthz` は `dormant: bool` を新フィールド
+  で返す(常時応答=warmトリガ外)。認証付き初回リクエストで**warm**(age復号+Runtime構築、singleflightで
+  同時多発を集約、budget 10s=fail-closed)。**idle zero**: `IDLE_ZERO_MINUTES`(既定30。小数対応。0=無効)経過で
+  COLDへ戻し in-flight完了後に `Secrets.Zero()`。passphrase保護identityは dormant不適合=通常ロードへ
+  フォールバック(§8)。--winhideやautostart実装は後続コミット(設計書 B/C/D案)
+- E2E: COLD起動でdormant:true→warm含むリクエスト200→idle経過でdormant回帰(dormant 3件追加)
+- `IDLE_ZERO_MINUTES` のランチャ焼き込み廃止(PR#1): env明示/既定30分のみ
+
 ### 修正 — pi側models.jsonへの role 正規化(pi-aiのdeveloper送りを回避)
 
 - pi-aiはreasoningモデルのsystemプロンプトを `developer` role で送るが、その判定はprovider名/baseURL依存。

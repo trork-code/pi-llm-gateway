@@ -22,6 +22,8 @@ type healthPayload struct {
 	Providers     []string                    `json:"providers"`
 	GatewayKeys   int                         `json:"gateway_keys"`
 	Recipients    int                         `json:"identity_recipients"`
+	// Dormant はドーマント常駐(design-distribution.md §8)での鍵未化状態(§docs/design-batch3.md)。
+	Dormant bool `json:"dormant"`
 }
 
 // modelHealthEntry はエイリアス1つ分の非秘匿概要。
@@ -31,20 +33,25 @@ type modelHealthEntry struct {
 }
 
 // Health は GET /healthz の本体(認証不要)。
+// Runtimeがnil(dormant・鍵未復号)のときは構成無しで状態のみを返す(§8: healthzはwarmトリガ外)。
 func (h *Handlers) Health(w http.ResponseWriter, _ *http.Request) {
-	rt := h.current()
 	resp := healthPayload{
 		Status:        "ok",
 		UptimeSeconds: int(time.Since(h.started).Seconds()),
 		PID:           os.Getpid(),
-		DefaultModel:  rt.Config.DefaultModel,
-		Providers:     sortedProviderNames(rt.Config),
-		Models:        make(map[string]modelHealthEntry, len(rt.Config.Models)),
-		GatewayKeys:   len(rt.Secrets.AllGatewayKeys()),
-		Recipients:    len(rt.Secrets.IdentityRecipients),
+		Models:        make(map[string]modelHealthEntry, 0),
 	}
-	for alias, mc := range rt.Config.Models {
-		resp.Models[alias] = modelHealthEntry{Provider: mc.Provider, Model: mc.Model}
+	if rt := h.rt.Load(); rt != nil {
+		resp.DefaultModel = rt.Config.DefaultModel
+		resp.Providers = sortedProviderNames(rt.Config)
+		resp.Models = make(map[string]modelHealthEntry, len(rt.Config.Models))
+		for alias, mc := range rt.Config.Models {
+			resp.Models[alias] = modelHealthEntry{Provider: mc.Provider, Model: mc.Model}
+		}
+		resp.GatewayKeys = len(rt.Secrets.AllGatewayKeys())
+		resp.Recipients = len(rt.Secrets.IdentityRecipients)
+	} else {
+		resp.Dormant = true
 	}
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
