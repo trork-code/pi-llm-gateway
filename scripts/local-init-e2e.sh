@@ -223,6 +223,50 @@ case "$OUT" in
 esac
 expect "ガードは非ゼロ終了" "2" "$rc"
 
+log "=== 9. autostart(dry-run登録定義/status/ガード) ==="
+# (a) 未セットアップ環境ではautostartもガードされる(case 8 の続き。GATEWAY_RUNTIME_DIRは未設定)
+set +e
+ASOUT="$(echo | "$GW" autostart install 2>&1)"; asrc=$?
+set -e
+case "$ASOUT" in
+  *"not set up"*) log "ok   autostart も隠し口のガード対象" ;;
+  *) fail "autostartのガード文言が無い: $ASOUT" ;;
+esac
+expect "autostartのガードは非ゼロ終了" "2" "$asrc"
+
+# (b) 環境を復元して --print(dry-run: OSへの副作用なしで登録定義を表示)
+export HOME="$WORK/home"; export USERPROFILE="$WORK/home"
+export GATEWAY_RUNTIME_DIR="$RT"
+if "$GW" autostart install --print >"$WORK/autostart.xml" 2>"$WORK/autostart.err"; then
+  log "ok   autostart install --print 成功"
+else
+  fail "autostart install --print が失敗"
+fi
+contains "登録定義: serve直接実行" "serve" "$WORK/autostart.xml"
+case "$(uname)" in
+  *MINGW*|*MSYS*|*CYGWIN*|*Windows*)
+    contains "登録定義: gateway.exeを参照" "gateway.exe" "$WORK/autostart.xml"
+    contains "登録定義: --winhide(Windows, コンソール非表示)" "winhide" "$WORK/autostart.xml"
+    contains "登録定義: ログオントリガー" "<LogonTrigger>" "$WORK/autostart.xml"
+    ;;
+  *)
+    contains "登録定義: binのgatewayを参照" "bin/gateway" "$WORK/autostart.xml"
+    contains "登録定義: Restart=on-failure(systemd)" "Restart=on-failure" "$WORK/autostart.xml"
+    ;;
+esac
+lacks "登録定義: up.cmd等のランチャ非参照" "up.cmd" "$WORK/autostart.xml"
+lacks "登録定義: env割当て焼き込み無し" "PORT=" "$WORK/autostart.xml"
+lacks "登録定義: 秘匿値焼き込み無し" "dummy-not-a-real-key" "$WORK/autostart.xml"
+contains "登録定義のtarget: 登録名" "pi-gateway" "$WORK/autostart.err"
+
+# (c) status: 未登録でも正常終了しtokenを出す(E2E環境では未登録)
+if "$GW" autostart status >"$WORK/astatus.txt" 2>&1; then
+  log "ok   autostart status 成功"
+else
+  fail "autostart status が失敗"
+fi
+contains "status: state token(未登録/登録済みどちらも可: 実機は登録済みの可能性もある)" "registered" "$WORK/astatus.txt"
+
 printf '\n'
 if [ "$FAILS" -eq 0 ]; then
   log "ALL PASS — init非対話フロー検収OK"

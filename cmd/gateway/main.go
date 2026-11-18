@@ -91,6 +91,15 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "autostart":
+			if guardHiddenCmd() {
+				os.Exit(2)
+			}
+			if err := autostartCmd(os.Args[2:], os.Stdout); err != nil {
+				slog.Error("autostartサブコマンドが失敗しました", "error", err)
+				os.Exit(1)
+			}
+			return
 		case "doctor":
 			if guardHiddenCmd() {
 				os.Exit(2)
@@ -174,9 +183,8 @@ func routeNew(cmd string, rest []string) error {
 	case "init":
 		return initCmd(rest, os.Stdout)
 	case "serve":
-		// 旧・裸gateway相当のフォアグラウンド起動(隠し口)
-		defer memguard.Purge()
-		return run(false)
+		// 旧・裸gateway相当のフォアグラウンド起動(隠し口。OS登録(autostart)が直接実行する)
+		return serveCmd(rest)
 	case "pi":
 		return piCmd(rest, os.Stdout)
 	}

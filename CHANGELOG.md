@@ -17,6 +17,27 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 - `-log` フラグを非推奨化(serveのログ先は`<runtime>/gateway.log`。`up`はforkしない)。`spawn_windows.go`/
   `spawn_unix.go`への参照をup経路から撤去(ファイルはバッチ4で整理)
 - E2E 6b: 未稼働up(未登録)は案内+rc=1、serve直接起動後のup=稼働確認rc=0を検証
+### 追加 — autostart(バッチ3 C案): ログイン常駐のOS直接登録+--winhide+PATH組込
+
+- **`gateway autostart install/uninstall/status`** を新設(メニュー5と同一コアの予備口。design-batch3.md §2)。
+  登録内容はOS共通で **`<runtime>/bin/gateway(.exe) serve` の絶対パス1本のみ**(PORT/BIND/identityはserveが
+  `setup.Discover`で自己解決)。install時に setup.json を `startup: "resident"` へ更新してドーマント有効化
+  (§3)。旧ランチャ(up.cmd等)を参照する登録は検出して置換(旧値は削除し新登録を書く)
+- OS別の登録実体: **Windows=Task Schedulerタスク `pi-gateway`**(schtasks /create /xml。LogonTrigger+
+  `<RunLevel>LeastPrivilege</RunLevel>`+`ExecutionTimeLimit=PT0S`(72h自動停止の無効化)。HKCU Runでは
+  `schtasks /run` でのOS発火が成立しないためTask Scheduler採用)、Linux=systemd --user unit(Type=simple+
+  Restart=on-failure)、macOS=LaunchAgent plist(RunAtLoad+KeepAlive)。`up` からのOS発火(systemctl start /
+  launchctl kickstart / schtasks /run)はB案コミット(先行済み)と接続
+- `--print`(dry-run): 登録定義のみstdoutへ出力(OSへの副作用なし。E2E/CI用。E2Eにケース9追加)
+- **`gateway serve --winhide`**: Windows専用新フラグ。起動直後に自コンソールを非表示化(GetConsoleWindow→
+  ShowWindow(SW_HIDE))してTask Scheduler起動時のコンソール点滅を防ぐ(build tag分割: winhide_windows.go)
+- **ユーザーPATH組込(Windows, --path)**: HKCU Environment Path へ `%USERPROFILE%\.pi-gateway\bin` を追加/
+  除去。**setx不使用**(既存値のトランケート防止)。型保持(REG_EXPAND_SZ/REG_SZ)+重複skip(末尾差/大小文字差/
+  %USERPROFILE%両形式)+書換え後 WM_SETTINGCHANGE 通知。unixでは `autostart status` にPATH組込状態を表示
+- **serve --dormant / --no-dormant**: ドーマント起動の明示上書き(フラグ > env GATEWAY_DORMANT > setup.json
+  startup)。設計書§3の注記(バッチ3 Cで実装)どおり serve_cmd.go で実装
+- unit: 登録定義生成器(systemd/plist/schtasks XML)+PATH純粋計算+startup resident更新+CLI解析。実機での
+  実登録(install/uninstall)の検収は配布先で実施(設計§7.3)
 
 ### 追加 — ドーマントモード(バッチ3 A案) + 詳細設計書
 

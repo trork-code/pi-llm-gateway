@@ -100,7 +100,7 @@ warm トリガ外)をそのまま実装する。PR 採用による変更点の�
 
 | 項目 | §8 原案 | バッチ3 確定 |
 |---|---|---|
-| dormant 判定 | ランシャが env/引数で制御 | **setup.json `startup=="resident"` のとき serve が dormant で起動**。override は `--dormant`/`--no-dormant` と env `GATEWAY_DORMANT` |
+| dormant 判定 | ランシャが env/引数で制御 | **setup.json `startup=="resident"` のとき serve が dormant で起動**。override は `--dormant`/`--no-dormant` と env `GATEWAY_DORMANT`(C案: --dormant/--no-dormant フラグは cmd/gateway/serve_cmd.go で実装済み。フラグ > env > setup.json の順) |
 | `IDLE_ZERO_MINUTES` | ランチャが焼き込む | ランチャ引退に伴い **env 未指定時の既定 30**(`IDLE_ZERO_MINUTES=0`=Zero 化しない)。ランチャ焼き込みは廃止 |
 | OS 登録時の制御 | — | 登録コマンドラインは serve 固定。ドーマントの on/off は setup.json の startup で決まる(登録に焼かない) |
 

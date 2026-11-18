@@ -180,7 +180,17 @@ func (g *dormantGate) Zero() {
 	}(old)
 }
 
+// serveDormantOverride はserveフラグ(--dormant/--no-dormant)による上書き(design-batch3.md §3注記)。
+// 0=上書きなし / 1=--dormant(強制dormant) / -1=--no-dormant(強制通常ロード)。フラグが最優先。
+var serveDormantOverride int8
+
 func dormantFromConfig(state *setup.State, log *slog.Logger) bool {
+	switch serveDormantOverride {
+	case 1:
+		return true
+	case -1:
+		return false
+	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("GATEWAY_DORMANT"))) {
 	case "1", "true", "on", "yes":
 		return true

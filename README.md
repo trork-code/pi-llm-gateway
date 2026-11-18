@@ -333,6 +333,7 @@ CI（.github/workflows/ci.yml）が gofmt / go vet / go build / go test を検�
 |---|---|
 | `serve` | 旧・裸`gateway`相当のフォアグラウンド起動(ランチャspawn先) |
 | `up` / `status` / `down` | 冪等起動/状態/安全停止 |
+| `autostart install\|uninstall\|status` | ログイン常駐のOS直接登録。`--print`=dry-run(表示のみ)、`--path`=ユーザーPATH組込(Windows) |
 | `keys list\|add\|remove\|set\|unset` | secrets管理CLI |
 | `pi install` / `pi uninstall` | pi models.json へのgatewayプロバイダー登録/解除 |
 | `-check` | 起動前のconfig・鍵検証 |
@@ -373,5 +374,36 @@ gateway models    # config/models.yaml 基準。DEFAULT列が*のエイリアス
 ```
 
 pi側(`/model`)に列挙される id と同じものを、config側の現状として表示する。
+
+### `gateway autostart` — ログイン常駐(serve直接登録)
+
+```
+gateway autostart install     # OSに '<runtime>/bin/gateway serve' を登録(バッチ3 §2)
+gateway autostart uninstall   # 登録を除去(ランチャ・鍵・configは触らない)
+gateway autostart status      # 登録状態・PATH組込状態・startup設定の表示
+gateway autostart install --print   # dry-run: 登録定義のみstdoutへ出力(E2E/CI用。OSへの副作用なし)
+gateway autostart install --path    # (Windows)binディレクトリをユーザーPATH(HKCU)へ組込。除去は `gateway autostart uninstall --path`
+```
+
+OS別の登録実体: Windows=Task Schedulerタスク `pi-gateway`(XML: LogonTrigger+`serve --winhide`。
+schtasks /run でのOS発火が成立するため HKCU Run ではなくこちらを採用)、Linux=systemd --user
+unit(Type=simple+Restart=on-failure)、macOS=LaunchAgent plist(RunAtLoad+KeepAlive)。
+登録コマンドラインは `<runtime>/bin/gateway(.exe) serve` の絶対パス1本のみで、PORT/BIND/identityは
+serve自身が runtime dir から発見する(PR#1 プロセス契約)。install 時に setup.json があれば
+`startup: "resident"` に更新し serveはドーマント起動になる(初回リクエストで鍵を復号)。
+
+serveのフラグ(登録時や手動起動で使用):
+
+```
+gateway serve --winhide       # 起動直後に自コンソールを非表示(Windows専用。Task Scheduler登録とペア)
+gateway serve --dormant       # ドーマント起動を強制(既定: setup.json startup=resident、env GATEWAY_DORMANT で上書き)
+gateway serve --no-dormant    # ドーマントを無効化して起動(通常ロード)
+```
+
+`--path` のPATH書換えは setx を使わず型保持(REG_EXPAND_SZ/REG_SZ)で %USERPROFILE% 形式を保存し、
+書換え後に WM_SETTINGCHANGE を通知する(既存シェルの環境は変わらず、新しく開くシェルから有効)。
+
+`gateway serve` は隠し口(OS登録・ランチャが使う)。`--winhide` を付けた起動はコンソール非表示のため
+手動のフォアグラウンド運用では使わない(通常の `gateway serve` はログが見える)。
 
 詳細な設計は [pi-llm-gateway-spec-go.md](pi-llm-gateway-spec-go.md) を参照。
