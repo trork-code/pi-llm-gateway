@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -72,18 +73,29 @@ func TestEscapeXMLText(t *testing.T) {
 }
 
 func TestUserPathEntryFor(t *testing.T) {
-	cases := []struct {
-		home, dir, want string
-	}{
-		{`C:\Users\me`, `C:\Users\me\.pi-gateway\bin`, `%USERPROFILE%\.pi-gateway\bin`},
-		{`C:\Users\me`, `D:\custom\gwbin`, `D:\custom\gwbin`},
-		{`/users/me`, `/users/me/.pi-gateway/bin`, `%USERPROFILE%\.pi-gateway\bin`},
-		{``, `C:\x`, `C:\x`},
-	}
-	for _, c := range cases {
-		if got := userPathEntryFor(c.home, c.dir); got != c.want {
-			t.Errorf("userPathEntryFor(%q,%q) = %q, want %q", c.home, c.dir, got, c.want)
+	// filepath.Relの区切り解釈はGOOS依存のため、期待値もGOOS別に検証する。
+	// (本関数はwindows実行時のみ実用途を持つが、相対化ロジック自体はどのGOOSでも検証したい)
+	type c struct{ home, dir, want string }
+	var cases []c
+	if runtime.GOOS == "windows" {
+		cases = []c{
+			{`C:\Users\me`, `C:\Users\me\.pi-gateway\bin`, `%USERPROFILE%\.pi-gateway\bin`},
+			{`C:\Users\me`, `D:\custom\gwbin`, `D:\custom\gwbin`},
 		}
+	} else {
+		cases = []c{
+			{`/users/me`, `/users/me/.pi-gateway/bin`, `%USERPROFILE%\.pi-gateway\bin`},
+			{`/users/me`, `/opt/gwbin`, `/opt/gwbin`},
+		}
+	}
+	for _, tc := range cases {
+		if got := userPathEntryFor(tc.home, tc.dir); got != tc.want {
+			t.Errorf("userPathEntryFor(%q,%q) = %q, want %q", tc.home, tc.dir, got, tc.want)
+		}
+	}
+	// home空は絶対パスをそのまま返す(共通)
+	if got := userPathEntryFor("", `C:\x`); got != `C:\x` {
+		t.Errorf("userPathEntryFor(空home) = %q", got)
 	}
 }
 
