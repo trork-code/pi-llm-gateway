@@ -5,6 +5,10 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+(なし — 次の変更はここに追記する)
+
+## [0.3.0] — 2026-11-18
+
 ### 変更 — autostart配線(C実装のwizard/メニュー接続: バッチ3 D残)
 
 - **メニューに「5) Startup / autostart」を追加**: 現状表示(登録/PATH/startup設定)→install/uninstall/statusの対話実行。
