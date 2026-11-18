@@ -149,8 +149,8 @@ func TestAtomicWrite_ReplacesExisting(t *testing.T) {
 func TestLauncherWrite(t *testing.T) {
 	dir := t.TempDir()
 	paths := Layout(dir)
-	err := WriteLauncher(paths, LauncherInput{Port: "18080", Bind: "127.0.0.1", Log: paths.Log, IdentityMode: "file"})
-	if err != nil {
+	// バッチ3 B案(design-batch3.md §1.2): 新形式(env割当て無し。serveが発見する)を検証する。
+	if err := WriteLauncher(paths, LauncherInput{Port: "18080", Bind: "127.0.0.1", Log: paths.Log, IdentityMode: "file"}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(paths.Launcher)
@@ -158,24 +158,23 @@ func TestLauncherWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(data)
+	if strings.Contains(s, "PORT=") || strings.Contains(s, "CONFIG_FILE=") ||
+		strings.Contains(s, "SECRETS_FILE=") || strings.Contains(s, "AGE_IDENTITY") {
+		t.Fatalf("新形式ランチャにenv割当てが有る(廃止済み): %s", s)
+	}
+	if !strings.Contains(s, "serve") || !strings.Contains(s, "status") {
+		t.Fatalf("新形式ランチャはserve起動+status確認であるべき: %s", s)
+	}
+	if strings.Contains(s, "gateway up") {
+		t.Fatalf("新形式ランチャはfork廃止後の `gateway up` を呼ばない: %s", s)
+	}
 	if runtime.GOOS == "windows" {
-		if !strings.Contains(s, "AGE_IDENTITY_FILE=") || !strings.Contains(s, "gateway.exe\" up") {
-			t.Fatalf("windowsランチャ不正: %s", s)
+		if !strings.Contains(s, "start \"\" /b ") {
+			t.Fatalf("windowsランチャは start /b で切り離すべき: %s", s)
 		}
 	} else {
-		if !strings.Contains(s, "export AGE_IDENTITY_FILE") {
-			t.Fatalf("unixランチャ不正: %s", s)
+		if !strings.Contains(s, "serve &\n") || !strings.Contains(s, "sleep 1") {
+			t.Fatalf("unixランチャはserveのバックグラウンド起動+待ちであるべき: %s", s)
 		}
-	}
-	// env: / cmd: モードでも鍵値を書かないこと
-	if err := WriteLauncher(paths, LauncherInput{Port: "18080", Log: paths.Log, IdentityMode: "env", IdentityValue: "MY_KEY_ENV"}); err != nil {
-		t.Fatal(err)
-	}
-	data, _ = os.ReadFile(paths.Launcher)
-	if !strings.Contains(string(data), "MY_KEY_ENV") || strings.Contains(string(data), "AGE_IDENTITY_FILE=") {
-		t.Fatalf("env:モードのランチャ不正: %s", data)
-	}
-	if runtime.GOOS == "windows" && !strings.Contains(string(data), "set AGE_IDENTITY=%MY_KEY_ENV%") {
-		t.Fatalf("windows env:モード不正: %s", data)
 	}
 }

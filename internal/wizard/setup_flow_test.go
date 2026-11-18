@@ -234,17 +234,30 @@ func TestRunSetup_RerunPreservesGatewayKey(t *testing.T) {
 	}
 }
 
-func TestRunSetup_ResidentDowngradesToManual(t *testing.T) {
+func TestRunSetup_ResidentKeepsStartup(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("WIZ_FLOW_KEY", "k")
 	out := &strings.Builder{}
-	if _, err := RunSetup(Options{RuntimeDir: dir, Provider: "ollamacloud",
+	sum, err := RunSetup(Options{RuntimeDir: dir, Provider: "ollamacloud",
 		APIKeySpec: "env:WIZ_FLOW_KEY", Startup: "resident", Port: "18099",
-		Yes: true, Stdin: strings.NewReader("")}, out); err != nil {
+		Yes: true, Stdin: strings.NewReader("")}, out)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "later release") {
+	// バッチ3: residentはsetup.jsonにそのまま焼く(serveがドーマントで起動、OS登録はC案で配線)
+	if sum.Startup != "resident" {
+		t.Fatalf("residentはmanualへダウングレードしない(バッチ3): %q", sum.Startup)
+	}
+	if !strings.Contains(out.String(), "resident") {
 		t.Fatalf("案内が無い: %s", out)
+	}
+	paths := setup.Layout(dir)
+	st, err := setup.LoadState(paths)
+	if err != nil || st == nil {
+		t.Fatal(err)
+	}
+	if st.Startup != "resident" {
+		t.Fatalf("setup.jsonのstartup: %q", st.Startup)
 	}
 }
 

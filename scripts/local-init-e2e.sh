@@ -83,6 +83,14 @@ BIN="$RT/bin/gateway"
 if [ "$(uname)" = "Windows_NT" ] || [ -f "$RT/bin/gateway.exe" ]; then BIN="$RT/bin/gateway.exe"; fi
 if [ -f "$BIN" ]; then log "ok   bin自己コピー($BIN)"; else fail "bin自己コピー無し($BIN)"; fi
 if [ -f "$RT/up.cmd" ] || [ -f "$RT/up.sh" ]; then log "ok   ランチャ生成"; else fail "ランチャ無し"; fi
+LCH="$RT/up.cmd"
+[ -f "$LCH" ] || LCH="$RT/up.sh"
+contains "ランチャ新形式(serve直接)" "serve" "$LCH"
+if grep -q "^set PORT=\|^PORT=" "$LCH" 2>/dev/null; then
+  fail "ランチャにenv割当てが残っている(新形式に更新を)"
+else
+  log "ok   ランチャにenv割当て無し(新形式)"
+fi
 contains "setup.json: provider記録" '"providers"' "$RT/setup.json"
 contains "setup.json: alias記録" '"pi-e2e"' "$RT/setup.json"
 

@@ -483,6 +483,10 @@ func doctorRunning(opts DoctorOptions, port string) (Check, bool) {
 		return c, false
 	}
 	c.Status = CheckOK
+	if hz.Dormant {
+		c.Detail = fmt.Sprintf("dormant at %s — listening, keys not loaded (first authenticated request warms it; uptime %ds)", url, hz.UptimeSeconds)
+		return c, true
+	}
 	c.Detail = fmt.Sprintf("warm at %s — uptime %ds, %d aliases, default=%s",
 		url, hz.UptimeSeconds, len(hz.Models), hz.DefaultModel)
 	return c, true
@@ -505,6 +509,7 @@ type doctorHealth struct {
 	UptimeSeconds int            `json:"uptime_seconds"`
 	DefaultModel  string         `json:"default_model"`
 	Models        map[string]any `json:"models"`
+	Dormant       bool           `json:"dormant"`
 }
 
 func fetchDoctorHealth(url string) (*doctorHealth, error) {
@@ -524,23 +529,34 @@ func fetchDoctorHealth(url string) (*doctorHealth, error) {
 	return &out, nil
 }
 
-// --- 7. 自動起動(第3バッチで実体実装。ここでは現状の見え方のみ) ----------------------
+// --- 7. 自動起動(B案のDetectAutostartで3OS統合: docs/design-batch3.md §2) ----------------
 
 func doctorAutostart(paths setup.Paths, st *setup.State) Check {
 	c := Check{No: 7, Label: "autostart"}
-	if _, err := os.Stat(paths.Launcher); err != nil {
+	reg, err := DetectAutostart(paths)
+	if err != nil {
 		c.Status = CheckWarn
-		c.Detail = fmt.Sprintf("launcher missing: %s", paths.Launcher)
-		c.Fix = "re-run `gateway` (writes the up launcher)"
+		c.Detail = "autostart detection failed: " + err.Error()
 		return c
 	}
-	if info, ok := autostartProbe(); ok {
+	if reg.Registered {
 		c.Status = CheckOK
-		c.Detail = "registered — " + info
+		detail := "registered — "
+		if reg.Command != "" {
+			detail += reg.Command + " "
+		}
+		c.Detail = detail + "(" + reg.Detail + ")"
+		return c
+	}
+	if reg.Legacy {
+		c.Status = CheckWarn
+		c.Detail = "legacy autostart found (points to the old launcher/up flow)"
+		c.Fix = "re-register with `gateway autostart install` (runs `gateway serve` directly; PR#1)"
 		return c
 	}
 	c.Status = CheckOK
-	c.Detail = "manual — start with the launcher (" + filepathBase(paths.Launcher) + ") or `gateway up`; login autostart arrives in a later update"
+	startHint := "`gateway serve` (foreground) or `gateway autostart install` (login-resident+dormant)"
+	c.Detail = "manual — " + startHint
 	return c
 }
 

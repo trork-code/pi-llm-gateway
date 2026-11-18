@@ -20,8 +20,11 @@ type LauncherInput struct {
 }
 
 // WriteLauncher は up.cmd / up.sh を生成する。
-// ランチャは冪等(`gateway up` の性質)で、ログイン時自動起動(バッチ3)と
-// 手動起動の両方で同じものを使う。
+// バッチ3 B案(design-batch3.md §1.2)で新形式: **env 割当てを書かない**。
+// serve が runtime dir(標準配置/setup.json)を発見するため(PORT/identity も不要)。
+// ログイン起動はこのランチャを使わない(autostart が serve を直接登録: C案)。ランチャは手動起動の便宜物。
+// 旧形式(env付き)の既存ランチャはそのまま残る(1 リリース互換。up.cmd からの `gateway up`
+// はB案でfork廃止済みのため、旧形式での起動はもはやしない=再生成時に新形式へ移行する)。
 func WriteLauncher(paths Paths, in LauncherInput) error {
 	var content string
 	switch runtime.GOOS {
@@ -40,54 +43,28 @@ func WriteLauncher(paths Paths, in LauncherInput) error {
 }
 
 func windowsLauncher(paths Paths, in LauncherInput) string {
+	_ = in // B案: env割当てをやめる(serveが発見)。LauncherInput 引数は C案の登録生成器との互換のため残す
 	var b strings.Builder
 	b.WriteString("@echo off\r\n")
-	b.WriteString("rem pi-gateway launcher (idempotent). Safe to run any time.\r\n")
-	b.WriteString("setlocal\r\n")
-	b.WriteString(fmt.Sprintf("set PORT=%s\r\n", in.Port))
-	b.WriteString(fmt.Sprintf("set BIND=%s\r\n", in.Bind))
-	switch in.IdentityMode {
-	case "env":
-		// AGE_IDENTITY を env:<NAME> 経由で渡す(値そのものは書かない)
-		fmt.Fprintf(&b, "set AGE_IDENTITY=%%%s%%\r\n", in.IdentityValue)
-	case "cmd":
-		fmt.Fprintf(&b, "set SECRETS_DECRYPT_CMD=%s\r\n", cmdlineFor(in.IdentityValue, true))
-	default: // file
-		fmt.Fprintf(&b, "set AGE_IDENTITY_FILE=%s\r\n", qWindows(paths.Identity))
-	}
-	fmt.Fprintf(&b, "set CONFIG_FILE=%s\r\n", qWindows(paths.Config))
-	fmt.Fprintf(&b, "set SECRETS_FILE=%s\r\n", qWindows(paths.Secrets))
-	fmt.Fprintf(&b, "cd /d \"%s\"\r\n", paths.Dir)
-	fmt.Fprintf(&b, "\"%s\" up -log \"%s\"\r\n", qWindows(paths.Bin), in.Log)
-	fmt.Fprintf(&b, "\"%s\" status -addr http://127.0.0.1:%s\r\n", qWindows(paths.Bin), in.Port)
-	b.WriteString("endlocal\r\n")
+	b.WriteString("rem pi-gateway manual-start helper (legacy; autostart registers `gateway serve` directly).\r\n")
+	b.WriteString("rem No env here -- the binary resolves the install from the runtime dir (PR#1).\r\n")
+	b.WriteString("cd /d \"%~dp0\"\r\n")
+	b.WriteString(fmt.Sprintf("start \"\" /b \"%s\" serve\r\n", paths.Bin))
+	b.WriteString("timeout /t 1 >nul\r\n")
+	b.WriteString(fmt.Sprintf("\"%s\" status\r\n", paths.Bin))
 	return b.String()
 }
 
 func unixLauncher(paths Paths, in LauncherInput) string {
+	_ = in
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
-	b.WriteString("# pi-gateway launcher (idempotent). Safe to run any time.\n")
-	b.WriteString(fmt.Sprintf("PORT=%s\n", in.Port))
-	b.WriteString(fmt.Sprintf("BIND=%s\n", in.Bind))
-	b.WriteString("export PORT BIND\n")
-	switch in.IdentityMode {
-	case "env":
-		// AGE_IDENTITY を env:<NAME> 経由で渡す(値そのものは書かない)
-		fmt.Fprintf(&b, "AGE_IDENTITY=\"${%s}\"\n", in.IdentityValue)
-		b.WriteString("export AGE_IDENTITY\n")
-	case "cmd":
-		fmt.Fprintf(&b, "SECRETS_DECRYPT_CMD=%s\n", cmdlineFor(in.IdentityValue, false))
-		b.WriteString("export SECRETS_DECRYPT_CMD\n")
-	default: // file
-		fmt.Fprintf(&b, "AGE_IDENTITY_FILE=\"%s\"\n", paths.Identity)
-		b.WriteString("export AGE_IDENTITY_FILE\n")
-	}
-	fmt.Fprintf(&b, "CONFIG_FILE=\"%s\"\n", paths.Config)
-	fmt.Fprintf(&b, "SECRETS_FILE=\"%s\"\n", paths.Secrets)
-	b.WriteString("export CONFIG_FILE SECRETS_FILE\n")
-	fmt.Fprintf(&b, "\"%s\" up -log \"%s\"\n", paths.Bin, in.Log)
-	fmt.Fprintf(&b, "\"%s\" status -addr \"http://127.0.0.1:${PORT}\"\n", paths.Bin)
+	b.WriteString("# pi-gateway manual-start helper (legacy; autostart registers `gateway serve` directly).\n")
+	b.WriteString("# No env here -- the binary resolves the install from the runtime dir (PR#1).\n")
+	b.WriteString("cd \"$(dirname \"$0\")\"\n")
+	b.WriteString(fmt.Sprintf("\"%s\" serve &\n", paths.Bin))
+	b.WriteString("sleep 1\n")
+	b.WriteString(fmt.Sprintf("\"%s\" status\n", paths.Bin))
 	return b.String()
 }
 

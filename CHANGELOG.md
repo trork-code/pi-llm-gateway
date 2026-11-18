@@ -5,6 +5,21 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 変更 — wizard/doctorの整合(バッチ3 D案: C依存を除く先行分)
+
+- **wizard `[5/5]` 起動方式をresident推奨に改定**(設計 §6): `1)` login auto-start+dormant(既定)。
+  resident選択は setup.jsonの`startup:"resident"` をそのまま焼く(B案のdormant serveが発現)。
+  旧「later releaseへダウングレード」noteを廃止。**OS登録(autostart install)の自動実行はC案のコミットで配線**(次ステップ)
+- **PrintSummary文言**(PR#1指摘): startup行は実際に走る登録コマンドライン(`…bin\gateway.exe serve`等)を示し、
+  「your alias」語を廃止(pi id=実モデル名)、models.json再読込は「reopen /model」案内
+- **ランチャ生成を新形式に**(design-batch3.md §1.2): up.cmd/up.sh は **env割当てを書かない**
+  (serveがDiscoveryで解決)+ `start /b gateway.exe serve`+status確認(bashはdetach)。B案のfork廃止で旧形式は
+  起動手段として壊れていたため(Bコミットの見落としを先送りせず修正)。旧形式の既存物はそのまま(1リリース互換)
+- **doctor item7 を DetectAutostart(3OS) に統合**(旧autostartProbe[HKCU Runのみ]を撤去):
+  登録済み=ok+コマンドライン表示、未登録=ok(manual運用)+「serve/autostart install」案内、
+  **旧ランチャ参照(up.cmd等)の登録=warnで「再登録推奨」**。item6はhealthzの`dormant:true`を
+  **dormant表示**(cold/dormant/warmを区別)
+
 ### 変更 — `up` の新仕様(バッチ3 B案: fork廃止・OS supervisor化)
 
 - **`gateway up` はdetach spawnしない**(design-batch3.md §1.1/PR#1)。未稼働時:

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -76,6 +78,8 @@ func RunInteractive(app Options, stdin io.Reader, stdout io.Writer) (*Summary, b
 }
 
 // PrintSummary は完了サマリの対話表示(cmd層の非対話モードでも使う)。
+// バッチ3(design-batch3.md §6): startupの1行は実際に走るものを示し、「alias」語は使わない
+// (pi id=実モデル名。PR#1指摘)。
 func PrintSummary(sum *Summary, w io.Writer) {
 	fmt.Fprintln(w, "──────────────────────────────────────────────")
 	fmt.Fprintf(w, "Setup complete.\n  runtime dir : %s\n  provider    : %s (gateway key fp %s, encrypted)\n  model       : %s (pi /model id = the same model name)\n",
@@ -86,10 +90,22 @@ func PrintSummary(sum *Summary, w io.Writer) {
 	} else {
 		fmt.Fprintln(w, "  pi          : skipped (register anytime with menu item 4)")
 	}
-	fmt.Fprintf(w, "  startup     : manual launcher at %s\n", sum.Port)
-	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Gateway starts with: run the launcher, or `gateway up`.")
-	fmt.Fprintln(w, "In pi: /model -> your alias.  If pi was already open, restart pi to pick up the new provider.")
+	if sum.Startup == "resident" {
+		fmt.Fprintf(w, "  startup     : resident - login autostart runs `%s serve` (dormant: keys load on first request)\n", filepath.Join(sum.RuntimeDir, "bin", binName()))
+		fmt.Fprintln(w, "Gateway stays resident at login. Manual start: `gateway serve`.")
+	} else {
+		fmt.Fprintf(w, "  startup     : manual - start when needed with `gateway serve` (or the legacy up.cmd/up.sh)\n")
+		fmt.Fprintln(w, "Gateway starts with: `gateway serve`, or up.cmd/up.sh in the runtime dir.")
+	}
+	fmt.Fprintln(w, "In pi: /model -> select the model. If pi was already open, reopen /model to reload models.json.")
+}
+
+// binName はOS別の実行バイナリ名(gateway / gateway.exe)。
+func binName() string {
+	if runtime.GOOS == "windows" {
+		return "gateway.exe"
+	}
+	return "gateway"
 }
 
 // --- 設問ヘルパ ------------------------------------------------------------
@@ -165,11 +181,13 @@ func askModel(in *bufio.Reader, out io.Writer, prov Provider, header string) (st
 	return strings.TrimSpace(model), true
 }
 
+// askStartup は[5/5] 起動方式の設問(バッチ3: resident推奨=OS登録でdormant常駐)。
 func askStartup(in *bufio.Reader, out io.Writer) (string, bool) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "[5/5] How should the gateway start?")
-	fmt.Fprintln(out, "  1) Start manually with `gateway up` (recommended for this release)")
-	fmt.Fprintln(out, "  2) Auto-start at login + dormant mode (lands in a later release)")
+	fmt.Fprintln(out, "  1) Auto-start at login + dormant mode (recommended when available)")
+	fmt.Fprintln(out, "     (resident keeps a `gateway serve` process running, decrypts keys on first request)")
+	fmt.Fprintln(out, "  2) Start manually when you need it (`gateway serve` / legacy up.cmd)")
 	for {
 		line, ok := readLineDefault(in, out, "Choose [1]: ", "1")
 		if !ok {
@@ -177,9 +195,9 @@ func askStartup(in *bufio.Reader, out io.Writer) (string, bool) {
 		}
 		switch strings.TrimSpace(line) {
 		case "1", "":
-			return "manual", true
-		case "2":
 			return "resident", true
+		case "2":
+			return "manual", true
 		default:
 			fmt.Fprintln(out, "  choose 1 or 2")
 		}

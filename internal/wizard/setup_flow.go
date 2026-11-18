@@ -101,14 +101,14 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 		app.Startup = "manual"
 	}
 	if app.Startup != "manual" && app.Startup != "resident" {
-		return nil, fmt.Errorf("startup は manual|resident (現在: %q)。resident は自動起動整備後のリリースで有効化", app.Startup)
+		return nil, fmt.Errorf("startup は manual|resident (現在: %q)", app.Startup)
 	}
 	if app.Startup == "resident" {
-		// バッチ1ではランチャまで生成し、自動起動登録はバッチ3(設計§9)。案内だけ出して継続
+		// バッチ3: setup.jsonにresidentを焼く(serveがドーマント待機で起動する=実装済み)。
+		// OS登録(autostart install)はバッチ3 C案のコミットで自動で行われる予定(次のリリースで言及)
 		if !app.Quiet {
-			fmt.Fprintln(stdout, "note: login auto-start lands in a later release; writing the manual launcher for now.")
+			fmt.Fprintln(stdout, "note: resident writes startup=resident (dormant serve at login once autostart install lands).")
 		}
-		app.Startup = "manual"
 	}
 	if app.Port == "" {
 		app.Port = "18080" // ウィザード既定(設計§5.1)
@@ -246,7 +246,7 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 	}
 	cfgProviders, _ := configProviders(paths.Config)
 	st := &setup.State{
-		Startup:      "manual",
+		Startup:      app.Startup,
 		IdentityMode: identityMode,
 		Port:         atoi(app.Port),
 		Bind:         app.Bind,
@@ -273,7 +273,7 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 		Model:        app.Model,
 		BaseURL:      fmt.Sprintf("http://127.0.0.1:%s/v1", app.Port),
 		Port:         app.Port,
-		Startup:      "manual",
+		Startup:      app.Startup,
 		IdentityMode: identityMode,
 		PiRegistered: app.Pi,
 		GatewayKeyFP: fp(gwKey),
