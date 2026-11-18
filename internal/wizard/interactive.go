@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,6 +66,7 @@ func RunInteractive(app Options, stdin io.Reader, stdout io.Writer) (*Summary, b
 		return nil, false, ErrAborted
 	}
 	app.Startup = startup
+	app.AutoInstall = true // 対話ウィザードのみOS登録を実行(非対話は案内のみ)
 
 	sum, err := RunSetup(app, stdout)
 	if err != nil {
@@ -278,6 +280,7 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "  2) Replace a provider API key\n")
 		fmt.Fprintf(stdout, "  3) Set default model / remove a model\n")
 		fmt.Fprintf(stdout, "  4) Register pi (models.json) again\n")
+		fmt.Fprintf(stdout, "  5) Startup / autostart    (register `gateway serve` with the OS; login-resident + dormant)\n")
 		fmt.Fprintf(stdout, "  6) Run diagnostics (doctor)\n")
 		fmt.Fprintf(stdout, "  q) Quit\n")
 		if !sum.Empty {
@@ -315,6 +318,13 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 			if err := menuPiRegister(paths, stdout); err != nil {
 				fmt.Fprintf(stdout, "error: %v\n", err)
 			}
+		case "5":
+			if err := menuStartup(paths, in, stdout); err != nil {
+				if errors.Is(err, ErrAborted) {
+					continue
+				}
+				fmt.Fprintf(stdout, "error: %v\n", err)
+			}
 		case "6":
 			if err := menuDoctor(paths, stdout); err != nil {
 				fmt.Fprintf(stdout, "error: %v\n", err)
@@ -322,7 +332,7 @@ func MenuLoop(stdin io.Reader, stdout io.Writer) error {
 		case "", "q", "quit", "exit":
 			return nil
 		default:
-			fmt.Fprintln(stdout, "  unknown choice (1 / 2 / 3 / 4 / 6 / q)")
+			fmt.Fprintln(stdout, "  unknown choice (1 / 2 / 3 / 4 / 5 / 6 / q)")
 		}
 	}
 }
@@ -364,6 +374,71 @@ func syncManualState(paths setup.Paths, out io.Writer) {
 	changed = true
 	if changed {
 		fmt.Fprintln(out, " "+"bookkeeping updated: setup.json written (doctor is now fully available)")
+	}
+}
+
+// menuStartup はメニュー「5) Startup / autostart」。現状表示→登録/除去の対話。
+// 登録実行は ops.AutostartInstall/Uninstall と同一コア(2階建て。autostart_cmd と同じ)。
+func menuStartup(paths setup.Paths, in *bufio.Reader, out io.Writer) error {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := ops.AutostartStatusInfo(paths)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "")
+	fmt.Fprintf(out, "Startup / autostart (%s)\n", st.Kind)
+	if st.Registered {
+		fmt.Fprintf(out, "  registered: %s\n", st.Command)
+	} else {
+		fmt.Fprintln(out, "  registered: no (install writes `<runtime>/bin/gateway(.exe) serve` with the OS; dormant at login)")
+	}
+	if st.Legacy {
+		fmt.Fprintln(out, "  note: legacy launcher-pointing registration found — reinstalling replaces it.")
+	}
+	if st.PathState != "" {
+		fmt.Fprintf(out, "  user PATH : %s\n", st.PathDetail)
+	}
+	fmt.Fprintf(out, "  startup setting : %s\n", map[bool]string{true: "resident (dormant serve at login)", false: "manual"}[st.Startup == "resident"])
+
+	action, ok := readLineDefault(in, out, "install / uninstall / status / (Enter=cancel): ", "")
+	if !ok || strings.TrimSpace(action) == "" {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "install":
+		usePath := false
+		if runtime.GOOS == "windows" && askYes(in, out, "Also add the bin dir to your user PATH?", true) {
+			usePath = true
+		}
+		res, err := ops.AutostartInstall(paths, ops.AutostartOptions{Path: usePath})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "installed: %s (%s)\n", res.Kind, res.Target)
+		for _, n := range res.Notes {
+			fmt.Fprintln(out, "note: "+n)
+		}
+		log.Info("autostart install", "kind", res.Kind, "target", res.Target, "path", usePath)
+		return nil
+	case "uninstall":
+		if !askYes(in, out, "Remove the autostart registration? (settings and keys are kept)", false) {
+			return nil
+		}
+		res, err := ops.AutostartUninstall(paths, ops.AutostartOptions{})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "removed: %s (%s)\n", res.Kind, res.Target)
+		for _, n := range res.Notes {
+			fmt.Fprintln(out, "note: "+n)
+		}
+		log.Info("autostart uninstall", "kind", res.Kind, "target", res.Target)
+		return nil
+	case "status":
+		return nil // 表示済み
+	default:
+		fmt.Fprintln(out, "  (cancelled)")
+		return nil
 	}
 }
 

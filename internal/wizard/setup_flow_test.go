@@ -244,12 +244,12 @@ func TestRunSetup_ResidentKeepsStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// バッチ3: residentはsetup.jsonにそのまま焼く(serveがドーマントで起動、OS登録はC案で配線)
+	// バッチ3: residentはsetup.jsonにそのまま焼く(serveがドーマントで起動、OS登録は対話AutoInstallのみ実行)
 	if sum.Startup != "resident" {
 		t.Fatalf("residentはmanualへダウングレードしない(バッチ3): %q", sum.Startup)
 	}
-	if !strings.Contains(out.String(), "resident") {
-		t.Fatalf("案内が無い: %s", out)
+	if !strings.Contains(out.String(), "autostart install") {
+		t.Fatalf("非対話時のautostart install案内が無い: %s", out)
 	}
 	paths := setup.Layout(dir)
 	st, err := setup.LoadState(paths)

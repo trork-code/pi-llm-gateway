@@ -36,6 +36,7 @@ type Options struct {
 	PrintJSON         bool
 	Quiet             bool
 	ForcePiKeyReplace bool // secretsに無い既存gk-キーの置換を許可(非対話の明示意志)
+	AutoInstall       bool // resident選択時にautostart install(OS登録)をその場で実行する(対話ウィザードのみ)
 	Stdin             io.Reader
 }
 
@@ -105,9 +106,21 @@ func RunSetup(app Options, stdout io.Writer) (*Summary, error) {
 	}
 	if app.Startup == "resident" {
 		// バッチ3: setup.jsonにresidentを焼く(serveがドーマント待機で起動する=実装済み)。
-		// OS登録(autostart install)はバッチ3 C案のコミットで自動で行われる予定(次のリリースで言及)
-		if !app.Quiet {
-			fmt.Fprintln(stdout, "note: resident writes startup=resident (dormant serve at login once autostart install lands).")
+		// OS登録は対話ウィザード(AutoInstall)ならその場で実行。非対話は明示コマンドを案内
+		// (非対話E2E/CIからOS書込みを避けるための副作用分離)。
+		if app.AutoInstall {
+			if res, err := ops.AutostartInstall(paths, ops.AutostartOptions{}); err != nil {
+				if !app.Quiet {
+					fmt.Fprintf(stdout, "note: autostart install failed (%v). Run `gateway autostart install` later.\n", err)
+				}
+			} else if !app.Quiet {
+				fmt.Fprintf(stdout, "note: autostart registered — %s (%s)\n", res.Kind, res.Target)
+				for _, n := range res.Notes {
+					fmt.Fprintln(stdout, "note: "+n)
+				}
+			}
+		} else if !app.Quiet {
+			fmt.Fprintln(stdout, "note: to enable login auto-start run `gateway autostart install` (registers `gateway serve`; dormant at login).")
 		}
 	}
 	if app.Port == "" {

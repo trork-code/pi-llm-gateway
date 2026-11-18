@@ -5,6 +5,16 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 変更 — autostart配線(C実装のwizard/メニュー接続: バッチ3 D残)
+
+- **メニューに「5) Startup / autostart」を追加**: 現状表示(登録/PATH/startup設定)→install/uninstall/statusの対話実行。
+  登録実行はC実装の `ops.AutostartInstall/Uninstall/StatusInfo` と同一コア(autostart_cmdと2階建て)。
+  Windowsのみbin追加を `PATHにも追加するか` の1問(既定Yes=設計書)
+- **対話ウィザードのresident選択が**autostart installを**その場で実行**(Options.AutoInstall):
+  非対話(--yes/--startup resident)は setup.json焼き+`gateway autostart install`案内のみ=非対話E2E/CIへ
+  OS書込みをさせない副作用分離
+- doctor item7をC実装のAutostartStatusInfoへ統一(BのDetectAutostartは同関数内で共有)+PATH組込状态/startup表示
+
 ### 変更 — wizard/doctorの整合(バッチ3 D案: C依存を除く先行分)
 
 - **wizard `[5/5]` 起動方式をresident推奨に改定**(設計 §6): `1)` login auto-start+dormant(既定)。

@@ -529,34 +529,39 @@ func fetchDoctorHealth(url string) (*doctorHealth, error) {
 	return &out, nil
 }
 
-// --- 7. 自動起動(B案のDetectAutostartで3OS統合: docs/design-batch3.md §2) ----------------
+// --- 7. 自動起動(C案のAutostartStatusInfoで3OS+PATH+startup統合) ------------------
 
 func doctorAutostart(paths setup.Paths, st *setup.State) Check {
 	c := Check{No: 7, Label: "autostart"}
-	reg, err := DetectAutostart(paths)
+	info, err := AutostartStatusInfo(paths)
 	if err != nil {
 		c.Status = CheckWarn
 		c.Detail = "autostart detection failed: " + err.Error()
 		return c
 	}
-	if reg.Registered {
+	var sb strings.Builder
+	if info.Registered {
 		c.Status = CheckOK
-		detail := "registered — "
-		if reg.Command != "" {
-			detail += reg.Command + " "
+		sb.WriteString("registered")
+		if info.Command != "" {
+			sb.WriteString(" — " + info.Command)
 		}
-		c.Detail = detail + "(" + reg.Detail + ")"
-		return c
-	}
-	if reg.Legacy {
+	} else if info.Legacy {
 		c.Status = CheckWarn
-		c.Detail = "legacy autostart found (points to the old launcher/up flow)"
+		sb.WriteString("legacy autostart found (points to the old launcher/up flow)")
 		c.Fix = "re-register with `gateway autostart install` (runs `gateway serve` directly; PR#1)"
-		return c
+	} else {
+		c.Status = CheckOK
+		sb.WriteString("manual — `gateway serve` (foreground) or `gateway autostart install` (login-resident+dormant)")
 	}
-	c.Status = CheckOK
-	startHint := "`gateway serve` (foreground) or `gateway autostart install` (login-resident+dormant)"
-	c.Detail = "manual — " + startHint
+	sb.WriteString(" [" + info.Detail + "]")
+	if info.Startup != "" {
+		sb.WriteString(" startup=" + info.Startup)
+	}
+	if info.PathState != "" {
+		sb.WriteString("; user PATH " + info.PathState)
+	}
+	c.Detail = strings.TrimSpace(sb.String())
 	return c
 }
 
