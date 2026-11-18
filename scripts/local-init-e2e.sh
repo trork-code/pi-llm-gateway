@@ -195,6 +195,8 @@ for _ in $(seq 1 300); do
   if [ -z "$c" ] || [ "$c" = "000" ]; then off="yes"; break; fi
 done
 expect "down後 /healthz 到達不可" "yes" "$off"
+# 念のためserve直接のプロセスを片付ける(downで落ちている場合は何もしない)
+kill "$SPID" 2>/dev/null || true
 if [ "$off" != "yes" ]; then
   log "[診断] healthz応答: $c / $port のLISTEN状況:"
   netstat -ano 2>/dev/null | grep ":$port" | head -5 || true
