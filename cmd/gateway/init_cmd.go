@@ -120,7 +120,7 @@ func startGatewayNow(paths setup.Paths, port string, stdout io.Writer) {
 		}
 	}()
 	fmt.Fprintf(stdout, "starting the gateway at http://127.0.0.1:%s ...\n", port)
-	if err := serviceUp(slog.Default(), "http://127.0.0.1:"+port, paths.Log, stdout); err != nil {
+	if err := serviceUp(slog.Default(), "http://127.0.0.1:"+port, stdout); err != nil {
 		fmt.Fprintf(stdout, "note: auto-start failed (%v). Run the launcher (%s) later.\n", err, paths.Launcher)
 	}
 }

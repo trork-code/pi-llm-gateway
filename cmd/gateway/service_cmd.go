@@ -23,13 +23,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/awnumar/memguard"
 
+	"github.com/trork-code/pi-llm-gateway/internal/ops"
 	"github.com/trork-code/pi-llm-gateway/internal/secrets"
 	"github.com/trork-code/pi-llm-gateway/internal/setup"
 )
@@ -158,7 +158,7 @@ func serviceCmd(op serviceOp, rest []string) error {
 	url := resolveGatewayURL(sf.addr)
 	switch op {
 	case opUp:
-		return serviceUp(log, url, sf.log, os.Stdout)
+		return serviceUp(log, url, os.Stdout)
 	case opStatus:
 		return serviceStatus(log, url, os.Stdout)
 	case opDown:
@@ -189,52 +189,64 @@ func printServiceUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: gateway up | status | down [flags]
 
 commands:
-  up       稼働していなければバックグラウンド起動→READY表示(冪等)
+  up       稼働確認。OS登録があるなら発火して起動を試みる(フォークせずOSがsupervisor)
   status   稼働状態・モデル構成を表示
   down     稼働中gatewayを安全に停止
 
 flags:
   -addr URL     ゲートウェイの自己接続先(既定: http://127.0.0.1:<PORT|8080>)
   -key STRING   down用gatewayキー(省略時: env GATEWAY_KEY → secrets復号)
-  -log PATH     up時のサーバーログ出力先(既定: gateway.log)
 
 env: GATEWAY_ADDR / GATEWAY_RELOAD_ADDR で接続先を固定化できる
 `)
 }
 
-// serviceUp は稼働確認→(必要なら)デタッチ起動→READY整備。
-func serviceUp(log *slog.Logger, url, logPath string, stdout io.Writer) error {
+// detectAutostart/fireAutostart はOS登録の検出と発火(ops.Autostart*)。
+// package変数はテストでの注入用(実OSへの副作用をテストから隔離する)。
+var (
+	detectAutostart = func() (ops.AutostartRegistration, error) {
+		dir, err := setup.ResolveDir("")
+		if err != nil {
+			return ops.AutostartRegistration{}, err
+		}
+		return ops.DetectAutostart(setup.Layout(dir))
+	}
+	fireAutostart = func() (string, error) { return ops.AutostartFire() }
+)
+
+// upReadyWait はOS発火後のREADY待ちの上限(テストで短縮可)。
+var upReadyWait = 10 * time.Second
+
+// serviceUp は稼働確認→(未稼働なら)OS登録の発火→READY整備。
+// fork(detach spawn)はしない(design-batch3.md §1.1: serveのsupervisorはOS)。
+// 登録が無い場合は起動手順(serve フォアグラウンド / autostart install)を案内してエラー。
+func serviceUp(log *slog.Logger, url string, stdout io.Writer) error {
 	if healthOK(url, 800*time.Millisecond) {
 		fmt.Fprintf(stdout, "稼働中です: %s(何もしません)\n", url)
 		return nil
 	}
-	if logPath == "" {
-		logPath = defaultUpLog()
-	}
-	exe, err := os.Executable()
+	reg, err := detectAutostart()
 	if err != nil {
-		return fmt.Errorf("実行ファイルの特定に失敗: %w", err)
+		return fmt.Errorf("自動起動(OS登録)の検出に失敗: %w", err)
 	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if !reg.Registered {
+		fmt.Fprintf(stdout, "未起動: %s に応答がありません。\n", url)
+		fmt.Fprintf(stdout, "起動するには: ターミナルで `gateway serve`(フォアグラウンド)を実行するか、\n")
+		fmt.Fprintf(stdout, "`gateway autostart install` でログイン常駐(serveをOS直接登録)にできます。\n")
+		return fmt.Errorf("gatewayが起動しておらず、自動起動の登録もありません(design-batch3.md §1.1)")
+	}
+	cmdline, err := fireAutostart()
 	if err != nil {
-		return fmt.Errorf("ログファイルを開けません(%s): %w", logPath, err)
+		return fmt.Errorf("自動起動の発火に失敗(%s): %w", cmdline, err)
 	}
-	defer f.Close()
-	// 裸はinit/メニューに変わった設計(§1.1)のため、spawn先は隠し serve を明示する
-	cmd := exec.Command(exe, "serve")
-	cmd.Stdout = f
-	cmd.Stderr = f
-	detachSysProcAttr(cmd)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("gatewayの起動に失敗: %w", err)
-	}
-	_ = cmd.Process.Release() // 親終了後も子を生存させる
+	log.Info("OS登録経由で自動起動を発火しました", "command", cmdline)
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(upReadyWait)
+	var hz *healthResponse
 	for time.Now().Before(deadline) {
 		if healthOK(url, 400*time.Millisecond) {
-			hz, _ := fetchHealth(url)
-			fmt.Fprintf(stdout, "READY: %s/v1(起動からすぐ稼働。pi側でモデルを選択して利用)\n", url)
+			hz, _ = fetchHealth(url)
+			fmt.Fprintf(stdout, "READY: %s/v1(OS登録経由で起動。pi側でモデルを選択して利用)\n", url)
 			if hz != nil {
 				fmt.Fprintf(stdout, "  default_model: %s / models: %d / providers: %v\n", hz.DefaultModel, len(hz.Models), hz.Providers)
 			}
@@ -242,7 +254,8 @@ func serviceUp(log *slog.Logger, url, logPath string, stdout io.Writer) error {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("gatewayが%d秒以内にREADYになりませんでした。ログ %s を確認してください", 10, logPath)
+	return fmt.Errorf("%s が%d秒以内にREADYになりませんでした(OS 発火は受け付けた。ログ %s を確認)",
+		url, 10, defaultUpLog())
 }
 
 // serviceStatus は稼働状態を表示する(未起動はエラーにしない)。

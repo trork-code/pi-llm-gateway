@@ -250,16 +250,18 @@ setup.json無しのmanual構成はランチャから PORT=/BIND= 解析。docs/p
 ランチャに頼らず `gateway up/serve/down` が単独で完結する）。
 
 ```bash
-gateway up        # 稼働していなければバックグラウンド起動→READY表示（冪等。セッション先頭で1回でOK）
-gateway status    # 稼働中: URL・uptime・エイリアス→provider割当・鍵数を表示。未起動でも正常終了
-gateway down      # 稼働中gatewayを安全に停止（稼働中リクエスト完了後）※gatewayキー認証
+gateway up        # 稼働確認。OS登録があれば発火して起動を試みる(forkせずOSがsupervisor)。登録が無ければ手順を案内
+                  # 未稼働+未登録: 「gateway serve」(フォアグラウンド)/「gateway autostart install」を案内して正常継続
+
+gateway status    # 稼働中のURL・uptime・エイリアス→provider割当・鍵数を表示。未起動でも正常終了
+gateway down      # 稼働中gatewayを安全に停止(稼働中リクエスト完了後)。gatewayキー認証
 ```
 
 - `up` の稼働確認・`status` は認証不要の `GET /healthz` を使う（監視ツールからも叩ける）
-- `down` のキー解決順: `-key` → env `GATEWAY_KEY` → secrets復号（identity envがあれば1本目）
-- `up` 起動分のサーバーログは `gateway.log`（`-log PATH` で変更）
+- `down` のキー解決順: `-key` → env `GATEWAY_KEY` → secrets復号（runtime dirのidentity.txtを自動発見）
+- serve起動分のサーバーログは `<runtime dir>/gateway.log`（`-log` フラグは非推奨）
 - TLS構成（自己署名含む）では `GATEWAY_ADDR=https://…` を設定しておくと、各CLIがそのURLへ接続
-- Windows起動時に自動で立ち上げたい場合は、`gateway up` をスタートアップに登録（冪等なので毎回走らせて安全）
+- **ログイン常駐は `gateway autostart install`**（バッチ3・OS登録が `gateway serve` を直接実行）。旧スタートアップ登録（env付きランチャ）からの移行は同じコマンドで置換される
 
 ### pi coding agent との接続
 

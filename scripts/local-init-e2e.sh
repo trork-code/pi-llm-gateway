@@ -135,17 +135,44 @@ expect "admin/reload 200" "200" "$POST_OK"
 kill $GWPID 2>/dev/null || true
 wait $GWPID 2>/dev/null || true
 
-log "=== 6b. 統合: ランチャを経由せず env 無しで gateway up/status/down 直接 ==="
+log "=== 6b. 統合: ランチャを経由せず env 無しで gateway serve/up/status/down 直接 ==="
 # PR #1(docs/proposal-startup.md)の中核: バイナリが runtime dir の標準配置と
-# setup.json(port/bind)/identity を自己解決する。親 up が spawn する serve も同じ発見で起動する。
+# setup.json(port/bind)/identity を自己解決する。
+# up の新仕様(バッチ3 B案/design-batch3.md §1.1): fork(spawn)をしない。未稼働+未登録=案内+rc=1。
 CLEAR_ENV="env -u PORT -u BIND -u CONFIG_FILE -u SECRETS_FILE -u AGE_IDENTITY_FILE -u AGE_PASSPHRASE -u SECRETS_DECRYPT_CMD -u GATEWAY_ADDR -u GATEWAY_RELOAD_ADDR -u GATEWAY_KEY"
 set +e
 UP_OUT="$(GATEWAY_RUNTIME_DIR="$RT" $CLEAR_ENV "$GW" up 2>&1)"; up_rc=$?
 set -e
 printf '%s\n' "$UP_OUT" >"$WORK/up_direct.out"
-expect "up 直接(env無し) rc=0" "0" "$up_rc"
-contains "up直接: READY表示" "READY" "$WORK/up_direct.out"
-contains "READYのポートがsetup.json由来" "http://127.0.0.1:$port/v1" "$WORK/up_direct.out"
+expect "未稼働up(未登録)はforkせず案内でrc=1" "1" "$up_rc"
+contains "up案内: serve直接手順" "gateway serve" "$WORK/up_direct.out"
+contains "up案内: autostart install" "autostart install" "$WORK/up_direct.out"
+lacks "up案内にspawnの痕跡が無い(8080/READY無し)" "READY" "$WORK/up_direct.out"
+
+# serve直接(フォアグラウンドをバックグラウンド実行)→up=probe(稼働確認)、status/down完結
+set +e
+GATEWAY_RUNTIME_DIR="$RT" $CLEAR_ENV "$GW" serve >"$WORK/serve_direct.log" 2>&1 &
+SPID=$!
+set -e
+READY="no"
+for _ in $(seq 1 40); do
+  sleep 0.2
+  c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$base/v1/models" 2>/dev/null || true)"
+  [ "$c" = "401" ] && { READY="yes"; break; }
+done
+expect "serve直接(env無し)で401待受" "yes" "$READY"
+
+set +e
+UP_OUT="$(GATEWAY_RUNTIME_DIR="$RT" $CLEAR_ENV "$GW" up 2>&1)"; up_rc=$?
+set -e
+printf '%s\n' "$UP_OUT" >"$WORK/up_running.out"
+expect "up(稼働中)はrc=0" "0" "$up_rc"
+contains "up直接: 稼働中表示(READY無し)" "稼働中です" "$WORK/up_running.out"
+if grep -q "http://127.0.0.1:$port" "$WORK/up_running.out" 2>/dev/null; then
+  log "ok   up直接のURLがsetup.json由来"
+else
+  fail "up直接のURLがsetup.json由来(内容: $(cat "$WORK/up_running.out" 2>/dev/null | head -3))"
+fi
 
 set +e
 ST_OUT="$(GATEWAY_RUNTIME_DIR="$RT" $CLEAR_ENV "$GW" status 2>&1)"; st_rc=$?
@@ -160,15 +187,13 @@ set -e
 printf '%s\n' "$DN_OUT" >"$WORK/down_direct.out"
 expect "down 直接(env無し) rc=0" "0" "$dn_rc"
 contains "down直接: 受付表示" "停止を受け付けました" "$WORK/down_direct.out"
-# shutdownは応答後に300ms待って閉じる。Windowsのspawn系は実際の落ちまで数秒かかることがあるため
-# 最長15s待つ(最終的に落ちなければFAIL: PR#1のspawn廃止でこの経路は消える予定)
+# shutdownは応答後に300ms待って閉じる。落ちるまで最長60s待つ(「000」含む判定)
 off="no"
 for _ in $(seq 1 300); do
   sleep 0.2
   c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$base/healthz" 2>/dev/null || true)"
   if [ -z "$c" ] || [ "$c" = "000" ]; then off="yes"; break; fi
 done
-log "[診断] オフループ終了時の末尾応答: $c"
 expect "down後 /healthz 到達不可" "yes" "$off"
 if [ "$off" != "yes" ]; then
   log "[診断] healthz応答: $c / $port のLISTEN状況:"

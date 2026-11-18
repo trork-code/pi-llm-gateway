@@ -10,11 +10,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 	"filippo.io/age/armor"
 	"gopkg.in/yaml.v3"
 
+	"runtime"
+
+	"github.com/trork-code/pi-llm-gateway/internal/ops"
 	"github.com/trork-code/pi-llm-gateway/internal/secrets"
 	"github.com/trork-code/pi-llm-gateway/internal/setup"
 )
@@ -93,7 +97,7 @@ func TestServiceStatusAndUpOnRunning(t *testing.T) {
 		t.Errorf("status出力: %s", out.String())
 	}
 	out.Reset()
-	if err := serviceUp(discardLog(t), srv.URL, "", &out); err != nil {
+	if err := serviceUp(discardLog(t), srv.URL, &out); err != nil {
 		t.Fatalf("up: %v", err)
 	}
 	if !strings.Contains(out.String(), "稼働中") {
@@ -256,5 +260,74 @@ func writeTestSecretsTo(t *testing.T, path string, id *age.X25519Identity, sec *
 	}
 	if err := os.WriteFile(path, []byte(buf.String()), 0o600); err != nil {
 		t.Fatalf("secretsの書き出し(%s): %v", path, err)
+	}
+}
+
+// TestServiceUp_NoRegisterGuides は未稼働+未登録のupがforkしない(OS発火もしない)で
+// 起動手順を案内してエラーにすることを検証する(design-batch3.md §1.1)。
+func TestServiceUp_NoRegisterGuides(t *testing.T) {
+	// 接続不能URL(閉じたポート)
+	badURL := "http://127.0.0.1:1"
+	fireCalls := 0
+	origDetect, origFire := detectAutostart, fireAutostart
+	t.Cleanup(func() { detectAutostart, fireAutostart = origDetect, origFire })
+	detectAutostart = func() (ops.AutostartRegistration, error) {
+		return ops.AutostartRegistration{Registered: false}, nil
+	}
+	fireAutostart = func() (string, error) { fireCalls++; return "noop", nil }
+
+	var out strings.Builder
+	if err := serviceUp(discardLog(t), badURL, &out); err == nil {
+		t.Fatal("未稼働+未登録はエラーであるべき")
+	}
+	if !strings.Contains(out.String(), "gateway serve") || !strings.Contains(out.String(), "autostart install") {
+		t.Fatalf("起動手順の案内が無い: %s", out.String())
+	}
+	if fireCalls != 0 {
+		t.Fatalf("未登録では発火しないべき: %d", fireCalls)
+	}
+}
+
+// TestServiceUp_FiresRegistered は登録済みならOS発火してREADY待ちに入ることを検証する。
+// (発火先は実OSではなくスタブ。READY待ちはタイムアウトでエラーに落ちるが、発火の実行自体を検証する)
+func TestServiceUp_FiresRegistered(t *testing.T) {
+	orig := upReadyWait
+	t.Cleanup(func() { upReadyWait = orig })
+	upReadyWait = 300 * time.Millisecond
+	badURL := "http://127.0.0.1:1"
+	fireCalls := 0
+	origDetect, origFire := detectAutostart, fireAutostart
+	t.Cleanup(func() { detectAutostart, fireAutostart = origDetect, origFire })
+	detectAutostart = func() (ops.AutostartRegistration, error) {
+		return ops.AutostartRegistration{Registered: true, Command: "gateway serve"}, nil
+	}
+	fireAutostart = func() (string, error) {
+		fireCalls++
+		return "systemctl --user start pi-gateway", nil
+	}
+
+	var out strings.Builder
+	if err := serviceUp(discardLog(t), badURL, &out); err == nil {
+		t.Fatal("発火先が真に稼働しないため最終的にはタイムアウトエラーであるべき")
+	}
+	if fireCalls != 1 {
+		t.Fatalf("登録済みなら発火するべき: %d", fireCalls)
+	}
+}
+
+// TestDetectAutostart_MissedOnEmptyHome は空HOMEでは未登録と判定することを検証する(副作用なし)。
+func TestDetectAutostart_MissedOnEmptyHome(t *testing.T) {
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", dir)
+	} else {
+		t.Setenv("HOME", dir)
+	}
+	reg, err := ops.DetectAutostart(setup.Layout(filepath.Join(dir, ".pi-gateway")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Registered || reg.Legacy {
+		t.Fatalf("空HOMEで登録が検出された: %+v", reg)
 	}
 }

@@ -5,6 +5,19 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
 
 ## [Unreleased]
 
+### 変更 — `up` の新仕様(バッチ3 B案: fork廃止・OS supervisor化)
+
+- **`gateway up` はdetach spawnしない**(design-batch3.md §1.1/PR#1)。未稼働時:
+  自動起動(serve直接登録)が **ある**→OS APIで発火(Windows=`schtasks /run`、Linux=`systemctl --user start`、
+  macOS=`launchctl kickstart`)してREADY待ち(upReadyWait既定10s)。**無い**→ターミナルで
+  `gateway serve`(フォアグラウンド)か `gateway autostart install`(常駐化)を案内してエラー終了。
+  Windowsのjob kill-on-close問題(pi内からのupで子が道連れになる)と「8080迷子サーバー」を原理的に解消
+- **internal/ops/autostart.go(新)**: serve直接登録の検出(DetectAutostart、読み取りのみ)+OS発火(AutostartFire)。
+  WindowsはTask Schedulerタスク/L systemd unit/mL LaunchAgent。検出はE2E等からも副作用なしに呼べる
+- `-log` フラグを非推奨化(serveのログ先は`<runtime>/gateway.log`。`up`はforkしない)。`spawn_windows.go`/
+  `spawn_unix.go`への参照をup経路から撤去(ファイルはバッチ4で整理)
+- E2E 6b: 未稼働up(未登録)は案内+rc=1、serve直接起動後のup=稼働確認rc=0を検証
+
 ### 追加 — ドーマントモード(バッチ3 A案) + 詳細設計書
 
 - **docs/design-batch3.mdを新設**: PR#1(docs/proposal-startup.md)のプロセス契約を正とするバッチ3の詳細設計
