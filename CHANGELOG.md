@@ -14,6 +14,17 @@ pi-llm-gateway の変更履歴。日付は JST、括弧内はコミットハッ�
   非対話(--yes/--startup resident)は setup.json焼き+`gateway autostart install`案内のみ=非対話E2E/CIへ
   OS書込みをさせない副作用分離
 - doctor item7をC実装のAutostartStatusInfoへ統一(BのDetectAutostartは同関数内で共有)+PATH組込状态/startup表示
+### 追加 — goreleaser配布 CI(バッチ3 F案)
+
+- **`.goreleaser.yml` を新設**: 6ターゲット(builds: windows/amd64 **v2**+arm64、linux・darwin の amd64/arm64。
+  memguard/x/sys は純Goのため CGO_ENABLED=0)のビルド+アーカイブ(windows=zip / それ以外=tar.gz)+
+  checksums.txt+changelog(git log)。windowsのamd64だけv2(SSE4.2)、unix amd64はv1(古いCPU互換)で別buildに分離
+- **バージョン焼き**: ldflags `-X main.appVersion={{ .Version }}`。ソース既定は `dev`(タグビルドでのみ確定。
+  `gateway version`(-v)の出力書式はそのまま)
+- **`.github/workflows/release.yml` を新設**: タグ `v*` push → goreleaser v2.20.2 でリリース
+  (GitHub Release へasset添付。CI(ci.yml)とは独立)。初回リリースは手動タグ(README quickstartはリリース後反映)
+- 検証: `goreleaser check` + `goreleaser release --snapshot --clean` をローカル実行(全6ターゲットの
+  ビルド+アーカイブ生成+ldflags焼き込みを確認)
 
 ### 変更 — wizard/doctorの整合(バッチ3 D案: C依存を除く先行分)
 

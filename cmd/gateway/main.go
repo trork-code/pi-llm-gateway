@@ -220,8 +220,10 @@ func guardHiddenCmd() bool {
 	return false
 }
 
-// appVersion はCHANGELOGのリリースに合わせて更新する。
-const appVersion = "0.2.0"
+// appVersion はリリースバージョン。タグビルド(goreleaser)が ldflags ` -X main.appVersion={{ .Version }}`
+// で焼くため、ソース既定は dev(gateway version(-v)の出力書式はそのまま。doctorの版比較も
+// ソースビルド同士なら両辺 dev で一致する)。
+var appVersion = "dev"
 
 func printMainUsage() {
 	fmt.Fprint(flag.CommandLine.Output(), `usage: gateway [init] | -v

@@ -1,0 +1,57 @@
+# goreleaser配布(design-batch3.md §5)。
+# 使い方: タグ `v*` をpushすると .github/workflows/release.yml が実行され、
+# 全ターゲットのバイナリ+アーカイブを GitHub Release に添付する。
+# ローカル検証: goreleaser check / goreleaser release --snapshot --clean
+# (初回リリースは手動タグ v0.3.0。README quickstartのRelease手順はリリース後に反映)
+version: 2
+
+project_name: pi-llm-gateway
+
+builds:
+  # Windowsはamd64=v2固定。arm64はGOAMD64の影響を受けない(amd64だけv2で別buildに分離)
+  - id: gateway-windows
+    main: ./cmd/gateway
+    binary: gateway
+    env:
+      - CGO_ENABLED=0 # memguard/x/sysは純Go。CGO不要
+    goos: [windows]
+    goarch: [amd64, arm64]
+    goamd64: [v2]
+    ldflags:
+      - -s -w -X main.appVersion={{ .Version }}
+  # Linux/macOS はamd64=v1(v2はSSE4.2要求となり古いCPUで動かない)
+  - id: gateway-unix
+    main: ./cmd/gateway
+    binary: gateway
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.appVersion={{ .Version }}
+
+archives:
+  - id: gateway-archives
+    ids:
+      - gateway-windows
+      - gateway-unix
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Amd64 }}{{ . }}{{ end }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
