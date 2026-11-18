@@ -21,7 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
+	"unicode/utf16"
 
 	"github.com/trork-code/pi-llm-gateway/internal/setup"
 )
@@ -457,19 +457,26 @@ const (
 
 // writeUTF16LEBOM は文字列をBOM付きUTF-16LEで書き込む。
 // schtasks /xml はUTF-16(BOM付き)が素直に読める(Windowsネイティブ形式)。
+// unicode/utf16(全OSで共通)を使用(syscall.UTF16FromStringはWindows専用ビルドのため)。
+// NULはXML定義に登場しないため、surrogateペアとコードポイント直書きで足りる。
 func writeUTF16LEBOM(f *os.File, s string) error {
 	if _, err := f.Write([]byte{utf16BOM1, utf16BOM2}); err != nil {
 		return err
 	}
-	units, err := syscall.UTF16FromString(s)
-	if err != nil {
-		return err
+	var buf []byte
+	for _, r := range s {
+		if r > 0xFFFF {
+			hi, lo := utf16.EncodeRune(r)
+			buf = appendUTF16LE(buf, uint16(hi))
+			buf = appendUTF16LE(buf, uint16(lo))
+			continue
+		}
+		buf = appendUTF16LE(buf, uint16(r))
 	}
-	buf := make([]byte, len(units)*2)
-	for i, u := range units {
-		buf[i*2] = byte(u)
-		buf[i*2+1] = byte(u >> 8)
-	}
-	_, err = f.Write(buf)
+	_, err := f.Write(buf)
 	return err
+}
+
+func appendUTF16LE(buf []byte, u uint16) []byte {
+	return append(buf, byte(u), byte(u>>8))
 }

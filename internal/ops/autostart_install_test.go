@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/trork-code/pi-llm-gateway/internal/setup"
 )
@@ -124,6 +125,30 @@ func TestStatusKindPerOS(t *testing.T) {
 		if got != "launchagent" {
 			t.Errorf("launchagent期待: %q", got)
 		}
+	}
+}
+
+func TestWriteUTF16LEBOM(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "utf16-*.xml")
+	if err != nil {
+		t.Fatalf("temp: %v", err)
+	}
+	defer f.Close()
+	if err := writeUTF16LEBOM(f, "pi-gateway serve \u00e9\U0001F4A9"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	data, _ := os.ReadFile(f.Name())
+	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xFE {
+		t.Fatalf("BOM無し: % x", data)
+	}
+	// 復号照合(LEのuint16列を文字列へ)
+	units := make([]uint16, (len(data)-2)/2)
+	for i := range units {
+		units[i] = uint16(data[2+i*2]) | uint16(data[3+i*2])<<8
+	}
+	if got := string(utf16.Decode(units)); got != "pi-gateway serve \u00e9\U0001F4A9" {
+		t.Errorf("復号不一致: %q", got)
 	}
 }
 
